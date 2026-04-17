@@ -10,6 +10,22 @@ extends Node3D
 var _saving: bool = false
 var _current_world_name: String = "My World"
 var _last_show_barriers: bool = false
+# Dimension state: 0 = overworld, 1 = nether.
+var _current_dimension: int = 0
+# Cached voxel data for the inactive dimension so we can swap back.
+var _overworld_voxels: PackedByteArray = PackedByteArray()
+var _nether_voxels: PackedByteArray = PackedByteArray()
+var _overworld_player_pos: Vector3 = Vector3.ZERO
+var _nether_player_pos: Vector3 = Vector3.ZERO
+var _nether_generated: bool = false
+var _portal_cooldown: float = 0.0
+# True while the player is physically inside a portal block. Must fully
+# exit (no portal contact) before the portal can trigger again — prevents
+# bouncing back and forth or getting stuck.
+var _in_portal: bool = false
+# Remembered overworld portal position so the return trip goes to the
+# same portal, not a random spawn.
+var _overworld_portal_pos: Vector3 = Vector3.ZERO
 
 # --- Day/night cycle ---
 # _day_time goes from 0.0 to 1.0 continuously. 0.0 = dawn, 0.25 = noon,
@@ -80,8 +96,145 @@ func _process(delta: float) -> void:
 		if player.collision_layer != (0 if want_noclip else 1):
 			player.collision_layer = 0 if want_noclip else 1
 			player.collision_mask = 0 if want_noclip else 1
+	# Portal check — teleport only when the player walks INTO a portal, not
+	# while they remain inside it. Must fully exit before it fires again.
+	_portal_cooldown = maxf(0.0, _portal_cooldown - delta)
+	if player != null and world != null:
+		var px: int = int(floor(player.global_position.x))
+		var py: int = int(floor(player.global_position.y))
+		var pz: int = int(floor(player.global_position.z))
+		var touching: bool = world.get_voxel(px, py, pz) == Chunk.Block.NETHER_PORTAL \
+				or world.get_voxel(px, py + 1, pz) == Chunk.Block.NETHER_PORTAL
+		if touching:
+			if not _in_portal and _portal_cooldown <= 0.0:
+				_in_portal = true
+				_switch_dimension()
+		else:
+			_in_portal = false
 	# Day/night cycle — advance time and push lighting to shaders.
 	_update_day_night(delta)
+
+
+## Switch between overworld (0) and nether (1). Saves the current
+## dimension's voxels to a cache, then loads or generates the other.
+func _switch_dimension() -> void:
+	if _saving:
+		return
+	_saving = true
+	_portal_cooldown = 3.0  # prevent instant bounce-back
+	var target: int = 1 if _current_dimension == 0 else 0
+
+	# 1. Cache current dimension's voxel data + player position.
+	pause_menu.show_loading("Entering " + ("Nether" if target == 1 else "Overworld") + "...")
+	await get_tree().process_frame
+	world.generation_progress.connect(_on_generation_progress)
+	var current_voxels: PackedByteArray = await _collect_voxels()
+	if _current_dimension == 0:
+		_overworld_voxels = current_voxels
+		_overworld_player_pos = player.global_position
+	else:
+		_nether_voxels = current_voxels
+		_nether_player_pos = player.global_position
+
+	# 2. Load or generate the target dimension.
+	if target == 1:
+		# Going to nether — remember the overworld portal position for return.
+		_overworld_portal_pos = player.global_position
+		if _nether_generated and _nether_voxels.size() > 0:
+			await world.load_from_save(world.world_size_blocks, _nether_voxels, world.world_seed, world.current_terrain_type)
+			player.global_position = _nether_player_pos
+		else:
+			world.dimension = 1
+			await world.regenerate_nether(world.world_size_blocks, world.world_seed)
+			# Spawn return portal ON the surface so the player can find it.
+			var sp: Vector3 = world.find_spawn_position()
+			_build_return_portal(int(sp.x), int(sp.y), int(sp.z))
+			# Position player just outside the portal, not inside it.
+			player.global_position = sp + Vector3(0, 0, -2)
+			_nether_generated = true
+		world.dimension = 1
+	else:
+		# Going back to overworld — return to the overworld portal position.
+		if _overworld_voxels.size() > 0:
+			world.dimension = 0
+			await world.load_from_save(world.world_size_blocks, _overworld_voxels, world.world_seed, world.current_terrain_type)
+			# Return to remembered portal position, offset slightly so we
+			# don't spawn inside the portal and immediately bounce back.
+			player.global_position = _overworld_portal_pos + Vector3(2, 0, 0)
+		world.dimension = 0
+
+	_current_dimension = target
+	player.velocity = Vector3.ZERO
+	# Validate the player isn't inside solid blocks or in the void.
+	# If the position is invalid, fall back to the world spawn.
+	_ensure_valid_position()
+	_in_portal = true  # suppress until player walks out
+	_portal_cooldown = 1.0
+	world.generation_progress.disconnect(_on_generation_progress)
+
+	# Full save after every portal transition so no progress is lost —
+	# both the active dimension's voxels and all game state are written.
+	if _current_world_name != "" and FileAccess.file_exists("user://saves/" + _current_world_name + ".save"):
+		world.generation_progress.connect(_on_generation_progress)
+		var gs_save: Dictionary = _build_game_state_dict()
+		await world.save_to_file(_current_world_name, player.global_position, gs_save)
+		world.generation_progress.disconnect(_on_generation_progress)
+		_save_dimension_cache(_current_world_name)
+		var state_path: String = "user://saves/" + _current_world_name + ".state"
+		var sf: FileAccess = FileAccess.open(state_path, FileAccess.WRITE)
+		if sf != null:
+			sf.store_string(JSON.stringify(gs_save))
+			sf.close()
+
+	_saving = false
+	_resume_game()
+
+
+## Build a small obsidian portal frame + portal blocks near the given
+## position so the player can return to the overworld.
+func _build_return_portal(wx: int, wy: int, wz: int) -> void:
+	# 5 wide × 5 tall frame in the XY plane (interior 3×3), offset 3 blocks
+	# in front of spawn so the player doesn't spawn inside it.
+	var pz: int = wz + 3
+	var size: int = world.world_size_blocks
+	if pz >= size - 1:
+		pz = wz - 3
+	# Clear space and build frame.
+	for dx: int in range(-2, 3):
+		for dy: int in range(0, 5):
+			var bx: int = wx + dx
+			var by: int = wy + dy
+			if bx < 0 or bx >= size or by < 0 or by >= size or pz < 0 or pz >= size:
+				continue
+			var is_frame: bool = dx == -2 or dx == 2 or dy == 0 or dy == 4
+			if is_frame:
+				world.set_voxel(bx, by, pz, Chunk.Block.OBSIDIAN)
+			else:
+				world.set_voxel(bx, by, pz, Chunk.Block.NETHER_PORTAL)
+
+
+## Quickly serialize all chunk voxels to a flat PackedByteArray (same format
+## as the save file's voxel buffer). Used for dimension caching.
+func _collect_voxels() -> PackedByteArray:
+	var size: int = world.world_size_blocks
+	var data := PackedByteArray()
+	data.resize(size * size * size)
+	var size2: int = size * size
+	for chunk: Chunk in world.chunks.values():
+		var cp: Vector3i = chunk.chunk_position
+		var bx: int = cp.x << 4
+		var by: int = cp.y << 4
+		var bz: int = cp.z << 4
+		var vox: PackedByteArray = chunk.voxels
+		for lz: int in 16:
+			var dst_z: int = (bz + lz) * size2
+			var src_z: int = lz << 8
+			for ly: int in 16:
+				var src_start: int = src_z + (ly << 4)
+				var dst_start: int = bx + (by + ly) * size + dst_z
+				for lx: int in 16:
+					data[dst_start + lx] = vox[src_start + lx]
+	return data
 
 
 func _setup_day_night() -> void:
@@ -206,11 +359,11 @@ func _update_day_night(delta: float) -> void:
 	if _sun_mesh != null:
 		_sun_mesh.global_position = cam_pos + sun_offset
 		_sun_mesh.look_at(cam_pos, Vector3.UP)
-		_sun_mesh.visible = sin(angle) > -0.15
+		_sun_mesh.visible = _current_dimension == 0 and sin(angle) > -0.15
 	if _moon_mesh != null:
 		_moon_mesh.global_position = cam_pos + moon_offset
 		_moon_mesh.look_at(cam_pos, Vector3.UP)
-		_moon_mesh.visible = sin(angle) < 0.15
+		_moon_mesh.visible = _current_dimension == 0 and sin(angle) < 0.15
 
 	# Lighting interpolation based on sun altitude.
 	# sun_alt: 1.0 at noon, 0.0 at horizon, negative at night.
@@ -219,28 +372,34 @@ func _update_day_night(delta: float) -> void:
 	# dawn/dusk over a ~10% band of the cycle.
 	var day_factor: float = smoothstep(-0.15, 0.2, sun_alt)
 
-	# Ambient: bright warm during day, cold dark at night.
-	var day_ambient := Vector3(0.20, 0.22, 0.28)
-	var night_ambient := Vector3(0.08, 0.09, 0.14)
-	var ambient := day_ambient * day_factor + night_ambient * (1.0 - day_factor)
-
-	# Sky light: uniform brightness added to all faces. Boosted so daytime
-	# reads as properly bright (ambient + sky_light ≈ 0.8 total at noon).
-	var day_sky_light := Vector3(0.58, 0.56, 0.50)
-	var sky_light := day_sky_light * day_factor
-
-	# Sky color: blue during day, dark blue at night, orange flash at horizon.
-	var day_sky := Color(0.53, 0.76, 0.98)
-	var night_sky := Color(0.02, 0.02, 0.06)
-	var sunset_sky := Color(0.85, 0.45, 0.20)
-	var sky: Color
-	if sun_alt > 0.15:
-		sky = day_sky
-	elif sun_alt > -0.05:
-		var t: float = (sun_alt + 0.05) / 0.20
-		sky = night_sky.lerp(sunset_sky, t) if t < 0.5 else sunset_sky.lerp(day_sky, (t - 0.5) * 2.0)
+	# Ambient + sky light — nether has constant dim reddish lighting, no cycle.
+	var ambient: Vector3
+	var sky_light: Vector3
+	if _current_dimension == 1:
+		ambient = Vector3(0.18, 0.08, 0.06)
+		sky_light = Vector3(0.30, 0.15, 0.10)
 	else:
-		sky = night_sky
+		var day_ambient := Vector3(0.20, 0.22, 0.28)
+		var night_ambient := Vector3(0.08, 0.09, 0.14)
+		ambient = day_ambient * day_factor + night_ambient * (1.0 - day_factor)
+		var day_sky_light := Vector3(0.58, 0.56, 0.50)
+		sky_light = day_sky_light * day_factor
+
+	# Sky color — nether has a constant dark red sky, no day/night cycle.
+	var sky: Color
+	if _current_dimension == 1:
+		sky = Color(0.18, 0.04, 0.02)
+	else:
+		var day_sky := Color(0.53, 0.76, 0.98)
+		var night_sky := Color(0.02, 0.02, 0.06)
+		var sunset_sky := Color(0.85, 0.45, 0.20)
+		if sun_alt > 0.15:
+			sky = day_sky
+		elif sun_alt > -0.05:
+			var t2: float = (sun_alt + 0.05) / 0.20
+			sky = night_sky.lerp(sunset_sky, t2) if t2 < 0.5 else sunset_sky.lerp(day_sky, (t2 - 0.5) * 2.0)
+		else:
+			sky = night_sky
 
 	# Push to all three shaders — just two uniforms now (no direction).
 	var ambient_col := Color(ambient.x, ambient.y, ambient.z)
@@ -566,6 +725,105 @@ func _on_main_menu_requested() -> void:
 ## file. Called automatically on quit and main-menu so the user never loses
 ## gamerule changes even without an explicit save. Only writes if a save
 ## for this world already exists (never creates a new save silently).
+## Make sure the player isn't inside solid blocks or below the world. If
+## the current position is invalid, teleport to the world spawn point.
+func _ensure_valid_position() -> void:
+	if player == null or world == null:
+		return
+	var pos: Vector3 = player.global_position
+	var px: int = int(floor(pos.x))
+	var py: int = int(floor(pos.y))
+	var pz: int = int(floor(pos.z))
+	var size: int = world.world_size_blocks
+	# Out of bounds → respawn.
+	if px < 0 or px >= size or pz < 0 or pz >= size or py < 1 or py >= size:
+		player.global_position = world.find_spawn_position()
+		return
+	# Check if feet or head are inside a solid block.
+	var feet: int = world.get_voxel(px, py, pz)
+	var head: int = world.get_voxel(px, py + 1, pz)
+	var solid_feet: bool = feet != Chunk.Block.AIR and feet != Chunk.Block.WATER \
+		and feet != Chunk.Block.LAVA and feet != Chunk.Block.FIRE \
+		and feet != Chunk.Block.NETHER_PORTAL and feet != Chunk.Block.POPPY \
+		and feet != Chunk.Block.DANDELION and feet != Chunk.Block.TORCH
+	var solid_head: bool = head != Chunk.Block.AIR and head != Chunk.Block.WATER \
+		and head != Chunk.Block.LAVA and head != Chunk.Block.FIRE \
+		and head != Chunk.Block.NETHER_PORTAL and head != Chunk.Block.POPPY \
+		and head != Chunk.Block.DANDELION and head != Chunk.Block.TORCH
+	if solid_feet or solid_head:
+		# Try moving up to find air.
+		for dy: int in range(1, 20):
+			var check_y: int = py + dy
+			if check_y + 1 >= size:
+				break
+			var f2: int = world.get_voxel(px, check_y, pz)
+			var h2: int = world.get_voxel(px, check_y + 1, pz)
+			if f2 == Chunk.Block.AIR and h2 == Chunk.Block.AIR:
+				player.global_position = Vector3(pos.x, float(check_y), pos.z)
+				return
+		# Still stuck — use world spawn.
+		player.global_position = world.find_spawn_position()
+	# Check there's ground somewhere below (not falling into void).
+	elif py > 0:
+		var has_ground: bool = false
+		for dy: int in range(py, -1, -1):
+			var b: int = world.get_voxel(px, dy, pz)
+			if b != Chunk.Block.AIR and b != Chunk.Block.WATER:
+				has_ground = true
+				break
+		if not has_ground:
+			player.global_position = world.find_spawn_position()
+
+
+## Build the complete game state dictionary for saving. Used by explicit
+## save, auto-save, and portal-transition save to stay consistent.
+func _build_game_state_dict() -> Dictionary:
+	return {
+		"day_time": _day_time,
+		"do_daylight_cycle": do_daylight_cycle,
+		"tick_rate": tick_rate,
+		"noclip": noclip,
+		"current_dimension": _current_dimension,
+		"nether_generated": _nether_generated,
+		"overworld_portal_x": _overworld_portal_pos.x,
+		"overworld_portal_y": _overworld_portal_pos.y,
+		"overworld_portal_z": _overworld_portal_pos.z,
+		"overworld_player_x": _overworld_player_pos.x,
+		"overworld_player_y": _overworld_player_pos.y,
+		"overworld_player_z": _overworld_player_pos.z,
+		"nether_player_x": _nether_player_pos.x,
+		"nether_player_y": _nether_player_pos.y,
+		"nether_player_z": _nether_player_pos.z,
+	}
+
+
+func _save_dimension_cache(save_name: String) -> void:
+	# Save the inactive dimension's voxels so both dimensions persist.
+	var nether_path: String = "user://saves/" + save_name + ".nether"
+	if _current_dimension == 0 and _nether_voxels.size() > 0:
+		var f: FileAccess = FileAccess.open(nether_path, FileAccess.WRITE)
+		if f != null:
+			f.store_buffer(_nether_voxels)
+			f.close()
+	elif _current_dimension == 1 and _overworld_voxels.size() > 0:
+		# The main .save file has the nether (active); cache overworld.
+		var ow_path: String = "user://saves/" + save_name + ".overworld"
+		var f: FileAccess = FileAccess.open(ow_path, FileAccess.WRITE)
+		if f != null:
+			f.store_buffer(_overworld_voxels)
+			f.close()
+
+
+func _load_dimension_cache(save_name: String) -> void:
+	var nether_path: String = "user://saves/" + save_name + ".nether"
+	if FileAccess.file_exists(nether_path):
+		var f: FileAccess = FileAccess.open(nether_path, FileAccess.READ)
+		if f != null:
+			_nether_voxels = f.get_buffer(f.get_length())
+			f.close()
+			_nether_generated = true
+
+
 func _auto_save_state() -> void:
 	var save_name: String = _current_world_name
 	if save_name.is_empty():
@@ -577,14 +835,8 @@ func _auto_save_state() -> void:
 	# Re-save the full world with current game state. This reuses the
 	# existing save flow (which collects voxels + writes everything).
 	# Since we're about to leave the scene, run it synchronously.
-	var gs: Dictionary = {
-		"day_time": _day_time,
-		"do_daylight_cycle": do_daylight_cycle,
-		"tick_rate": tick_rate,
-		"noclip": noclip,
-	}
-	# Write just the game state as a sidecar JSON file — much faster than
-	# re-saving the entire voxel data.
+	var gs: Dictionary = _build_game_state_dict()
+	# Write just the game state as a sidecar JSON file.
 	var state_path: String = "user://saves/" + save_name + ".state"
 	var f: FileAccess = FileAccess.open(state_path, FileAccess.WRITE)
 	if f != null:
@@ -603,13 +855,11 @@ func _on_save_requested(save_name: String) -> void:
 	await get_tree().process_frame
 	world.generation_progress.connect(_on_generation_progress)
 	var t_start: int = Time.get_ticks_msec()
-	var gs: Dictionary = {
-		"day_time": _day_time,
-		"do_daylight_cycle": do_daylight_cycle,
-		"tick_rate": tick_rate,
-		"noclip": noclip,
-	}
+	var gs: Dictionary = _build_game_state_dict()
 	var ok: bool = await world.save_to_file(save_name, player.global_position, gs)
+	# Also save the inactive dimension's cached voxels as a sidecar file.
+	if ok:
+		_save_dimension_cache(save_name)
 	world.generation_progress.disconnect(_on_generation_progress)
 	if ok:
 		print("Saved: ", save_name)
@@ -664,6 +914,30 @@ func _on_load_requested(save_name: String) -> void:
 		tick_rate = float(gs["tick_rate"])
 	if gs.has("noclip"):
 		noclip = bool(gs["noclip"])
+	if gs.has("current_dimension"):
+		_current_dimension = int(gs["current_dimension"])
+		world.dimension = _current_dimension
+	if gs.has("nether_generated"):
+		_nether_generated = bool(gs["nether_generated"])
+	if gs.has("overworld_portal_x"):
+		_overworld_portal_pos = Vector3(
+			float(gs["overworld_portal_x"]),
+			float(gs["overworld_portal_y"]),
+			float(gs["overworld_portal_z"]),
+		)
+	if gs.has("overworld_player_x"):
+		_overworld_player_pos = Vector3(
+			float(gs["overworld_player_x"]),
+			float(gs["overworld_player_y"]),
+			float(gs["overworld_player_z"]),
+		)
+	if gs.has("nether_player_x"):
+		_nether_player_pos = Vector3(
+			float(gs["nether_player_x"]),
+			float(gs["nether_player_y"]),
+			float(gs["nether_player_z"]),
+		)
+	_load_dimension_cache(save_name)
 	_saving = false
 	_resume_game()
 

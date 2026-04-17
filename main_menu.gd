@@ -188,6 +188,25 @@ func _build_screen() -> void:
 		Screen.SETTINGS: _build_settings()
 		Screen.CONTROLS: _build_controls()
 
+	# Version label — bottom-left corner, visible on every screen.
+	var ver := Label.new()
+	ver.text = "Recraft vA1.0.0"
+	if _font != null:
+		ver.add_theme_font_override("font", _font)
+	ver.add_theme_font_size_override("font_size", PauseMenu._fs(20))
+	ver.add_theme_color_override("font_color", Color(1, 1, 1, 0.5))
+	ver.add_theme_color_override("font_shadow_color", Color(0, 0, 0, 0.5))
+	ver.add_theme_constant_override("shadow_offset_x", 1)
+	ver.add_theme_constant_override("shadow_offset_y", 1)
+	ver.anchor_left = 0.0
+	ver.anchor_top = 1.0
+	ver.anchor_right = 0.5
+	ver.anchor_bottom = 1.0
+	ver.offset_left = 4
+	ver.offset_top = -20
+	ver.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	add_child(ver)
+
 
 func _show_screen(screen: int) -> void:
 	_current_screen = screen

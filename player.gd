@@ -492,6 +492,8 @@ func _is_solid_support(b: int) -> bool:
 		return false
 	if b == Chunk.Block.DANDELION or b == Chunk.Block.POPPY or b == Chunk.Block.TORCH:
 		return false
+	if b == Chunk.Block.NETHER_PORTAL:
+		return false
 	return true
 
 

@@ -1,7 +1,7 @@
 class_name BlockTextures
 
 const TILE_SIZE: int = 16
-const TILE_COUNT: int = 51
+const TILE_COUNT: int = 55
 # Atlas layout (left to right):
 # 0  stone            1  cobblestone       2  brick
 # 3  dirt             4  planks            5  log_side
@@ -110,6 +110,10 @@ static func create_atlas() -> ImageTexture:
 	_draw_poppy(img, rng, 48)
 	_draw_dandelion(img, rng, 49)
 	_draw_torch(img, rng, 50)
+	_draw_netherrack(img, rng, 51)
+	_draw_nether_gold_ore(img, rng, 52)
+	_draw_nether_quartz_ore(img, rng, 53)
+	_draw_nether_portal(img, rng, 54)
 
 	# World saturation lift — applied before mipmaps so downsampled levels
 	# inherit the boosted palette. Adaptive, so stone-gray pixels don't
@@ -915,6 +919,93 @@ static func _draw_torch(img: Image, rng: RandomNumberGenerator, t: int) -> void:
 	_px(img, t, 5, 5, flame_outer); _px(img, t, 10, 5, flame_outer)
 	# Tip
 	_px(img, t, 7, 1, Color(1.0, 0.75, 0.20, 0.8))
+
+
+## Netherrack — dark red-brown rocky texture with cracks and variation,
+## resembling the hell-stone from Minecraft. Noisy with darker veins.
+static func _draw_netherrack(img: Image, rng: RandomNumberGenerator, t: int) -> void:
+	for y: int in TILE_SIZE:
+		for x: int in TILE_SIZE:
+			var r: float = rng.randf()
+			var shade: float
+			if r < 0.12:
+				shade = 0.70  # dark crack
+			elif r < 0.35:
+				shade = 0.82
+			elif r < 0.70:
+				shade = 0.90
+			else:
+				shade = 1.0
+			# Base color: dark maroon-red
+			var c := Color(0.52 * shade, 0.20 * shade, 0.18 * shade)
+			_px(img, t, x, y, c)
+	# Dark vein streaks running horizontally
+	for y: int in [3, 7, 11]:
+		for x: int in TILE_SIZE:
+			if rng.randf() < 0.6:
+				_px(img, t, x, y, Color(0.30, 0.10, 0.09))
+
+
+## Nether gold ore — netherrack base with scattered gold specks. The gold
+## is brighter and more orange than overworld gold ore to stand out against
+## the red netherrack.
+static func _draw_nether_gold_ore(img: Image, rng: RandomNumberGenerator, t: int) -> void:
+	_draw_netherrack(img, rng, t)
+	var gold := Color(0.95, 0.75, 0.20)
+	var gold_dk := Color(0.72, 0.52, 0.12)
+	var count: int = rng.randi_range(8, 14)
+	for _i: int in count:
+		var cx: int = rng.randi_range(1, TILE_SIZE - 2)
+		var cy: int = rng.randi_range(1, TILE_SIZE - 2)
+		_px(img, t, cx, cy, gold)
+		# Adjacent pixel for a 1-2 pixel cluster
+		if rng.randf() < 0.5:
+			var dx: int = rng.randi_range(-1, 1)
+			var dy: int = rng.randi_range(-1, 1)
+			var nx: int = clampi(cx + dx, 0, TILE_SIZE - 1)
+			var ny: int = clampi(cy + dy, 0, TILE_SIZE - 1)
+			_px(img, t, nx, ny, gold_dk)
+
+
+## Nether quartz ore — netherrack base with white/cream quartz veins.
+## Distinctive from gold by being pale against the dark red background.
+static func _draw_nether_quartz_ore(img: Image, rng: RandomNumberGenerator, t: int) -> void:
+	_draw_netherrack(img, rng, t)
+	var quartz := Color(0.92, 0.88, 0.82)
+	var quartz_dk := Color(0.75, 0.70, 0.65)
+	# Quartz forms in small veins/lines rather than scattered dots.
+	var veins: int = rng.randi_range(3, 5)
+	for _v: int in veins:
+		var sx: int = rng.randi_range(1, TILE_SIZE - 2)
+		var sy: int = rng.randi_range(1, TILE_SIZE - 2)
+		var length: int = rng.randi_range(2, 4)
+		var dx: int = rng.randi_range(-1, 1)
+		var dy: int = rng.randi_range(-1, 1)
+		if dx == 0 and dy == 0:
+			dx = 1
+		for _s: int in length:
+			if sx >= 0 and sx < TILE_SIZE and sy >= 0 and sy < TILE_SIZE:
+				_px(img, t, sx, sy, quartz if rng.randf() < 0.6 else quartz_dk)
+			sx += dx
+			sy += dy
+
+
+## Nether portal — translucent purple swirl texture. Alpha < 1 so it reads
+## as a glowing membrane you can walk through.
+static func _draw_nether_portal(img: Image, rng: RandomNumberGenerator, t: int) -> void:
+	for y: int in TILE_SIZE:
+		for x: int in TILE_SIZE:
+			var r: float = rng.randf()
+			var purple: Color
+			if r < 0.25:
+				purple = Color(0.35, 0.10, 0.65, 0.75)
+			elif r < 0.55:
+				purple = Color(0.50, 0.15, 0.80, 0.80)
+			elif r < 0.80:
+				purple = Color(0.60, 0.25, 0.90, 0.85)
+			else:
+				purple = Color(0.75, 0.40, 1.00, 0.90)  # bright sparkle
+			_px(img, t, x, y, purple)
 
 
 static func _draw_lava(img: Image, rng: RandomNumberGenerator, t: int) -> void:

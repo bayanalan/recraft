@@ -65,6 +65,7 @@ static func get_block_light_level(block: int) -> int:
 		Chunk.Block.TORCH: return 16
 		Chunk.Block.FIRE: return 12
 		Chunk.Block.LAVA: return 12
+		Chunk.Block.NETHER_PORTAL: return 11
 	return 0
 var _bounds_body: StaticBody3D = null
 
@@ -389,8 +390,8 @@ func break_block(origin: Vector3, direction: Vector3) -> bool:
 	if not hit.get("hit", false):
 		return false
 	var block: int = hit["block"]
-	# World bedrock at the bottom of the world is unbreakable.
-	if block == Chunk.Block.WORLD_BEDROCK:
+	# Unbreakable blocks.
+	if block == Chunk.Block.WORLD_BEDROCK or block == Chunk.Block.NETHER_PORTAL:
 		return false
 	var pos: Vector3i = hit["position"]
 	if particle_system != null:
@@ -399,9 +400,10 @@ func break_block(origin: Vector3, direction: Vector3) -> bool:
 	# Remove light emitter if this block was one.
 	if light_emitters.has(pos):
 		light_emitters.erase(pos)
-	# Breaking a log can orphan nearby natural leaves — schedule them for
-	# decay. Placed leaves (water_level[idx] == 1) are skipped by the
-	# scheduler, so the check is safe.
+	# Breaking obsidian destroys all connected portal blocks (like Minecraft).
+	if block == Chunk.Block.OBSIDIAN:
+		_destroy_adjacent_portals(pos)
+	# Breaking a log can orphan nearby natural leaves.
 	if block == Chunk.Block.LOG:
 		_schedule_leaf_decay_around(pos)
 	# Wake up any adjacent flowing fluid that can still spread into the
@@ -487,6 +489,9 @@ func place_block(origin: Vector3, direction: Vector3, block_type: int, player_aa
 		var emit_lvl: int = get_block_light_level(block_type)
 		if emit_lvl > 0:
 			light_emitters[place_pos] = emit_lvl
+		# Fire placement may ignite a nether portal if inside an obsidian frame.
+		if block_type == Chunk.Block.FIRE:
+			_try_ignite_portal(place_pos)
 		# Tag player-placed leaves so the decay ticker leaves them alone.
 		if block_type == Chunk.Block.LEAVES:
 			var cp := Vector3i(place_pos.x >> 4, place_pos.y >> 4, place_pos.z >> 4)
@@ -495,6 +500,116 @@ func place_block(origin: Vector3, direction: Vector3, block_type: int, player_aa
 				var idx: int = (place_pos.x & 15) + ((place_pos.y & 15) << 4) + ((place_pos.z & 15) << 8)
 				chunk.water_level[idx] = 1
 	return true
+
+
+# --- Nether portal ---
+
+## Which dimension this world represents. 0 = overworld, 1 = nether.
+var dimension: int = 0
+
+## After fire is placed, check if it's inside a valid obsidian frame on
+## either the XY plane (portal facing Z) or ZY plane (portal facing X).
+## A valid frame has obsidian on every border cell, with an interior gap
+## that's at least 3 wide × 2 tall. Corners may be missing (Minecraft-style).
+## If valid, fill the interior with NETHER_PORTAL blocks.
+func _try_ignite_portal(fire_pos: Vector3i) -> void:
+	# Try both orientations: portal in the XZ plane (axis=0→X width, Y height)
+	# and the ZY plane (axis=2→Z width, Y height).
+	for axis: int in [0, 2]:  # 0 = portal spans X, 2 = portal spans Z
+		var portal_cells: Array[Vector3i] = _detect_portal_frame(fire_pos, axis)
+		if not portal_cells.is_empty():
+			for p: Vector3i in portal_cells:
+				set_voxel(p.x, p.y, p.z, Chunk.Block.NETHER_PORTAL)
+			return  # first valid orientation wins
+
+
+func _detect_portal_frame(pos: Vector3i, axis: int) -> Array[Vector3i]:
+	# Flood-fill from `pos` in the plane defined by `axis` (X or Z) + Y.
+	# Collect air/fire cells bounded by obsidian. If the region is >= 3 wide
+	# × 2 tall and fully enclosed by obsidian, return the interior cells.
+	var cells: Array[Vector3i] = []
+	var visited: Dictionary = {}
+	var queue: Array[Vector3i] = [pos]
+	visited[pos] = true
+	var min_h: int = pos[axis]  # horizontal min (X or Z)
+	var max_h: int = pos[axis]
+	var min_y: int = pos.y
+	var max_y: int = pos.y
+	const MAX_FILL: int = 100  # safety limit
+
+	while not queue.is_empty() and cells.size() < MAX_FILL:
+		var p: Vector3i = queue.pop_front()
+		var b: int = get_voxel(p.x, p.y, p.z)
+		if b != Chunk.Block.AIR and b != Chunk.Block.FIRE and b != Chunk.Block.NETHER_PORTAL:
+			continue  # not interior
+		cells.append(p)
+		min_h = mini(min_h, p[axis])
+		max_h = maxi(max_h, p[axis])
+		min_y = mini(min_y, p.y)
+		max_y = maxi(max_y, p.y)
+		# Expand in the 4 cardinal directions of this plane (horizontal + up/down).
+		for delta: int in [-1, 1]:
+			# Horizontal neighbor
+			var nh := Vector3i(p)
+			nh[axis] += delta
+			if not visited.has(nh):
+				visited[nh] = true
+				var nb: int = get_voxel(nh.x, nh.y, nh.z)
+				if nb == Chunk.Block.AIR or nb == Chunk.Block.FIRE or nb == Chunk.Block.NETHER_PORTAL:
+					queue.append(nh)
+				elif nb != Chunk.Block.OBSIDIAN:
+					return []  # boundary isn't obsidian → invalid
+			# Vertical neighbor
+			var nv := Vector3i(p.x, p.y + delta, p.z)
+			if not visited.has(nv):
+				visited[nv] = true
+				var nb2: int = get_voxel(nv.x, nv.y, nv.z)
+				if nb2 == Chunk.Block.AIR or nb2 == Chunk.Block.FIRE or nb2 == Chunk.Block.NETHER_PORTAL:
+					queue.append(nv)
+				elif nb2 != Chunk.Block.OBSIDIAN:
+					return []
+
+	if cells.size() >= MAX_FILL:
+		return []  # too large — not a valid frame
+	var width: int = max_h - min_h + 1
+	var height: int = max_y - min_y + 1
+	if width < 1 or height < 2:
+		return []  # too small (interior must be at least 1×2)
+	# Verify the entire border (one cell outside the interior) is obsidian.
+	# We already rejected non-obsidian during flood-fill, so if we got here
+	# the frame is valid.
+	return cells
+
+
+## When an obsidian block is broken, flood-fill from its 6 neighbors to find
+## and destroy all connected NETHER_PORTAL blocks. This collapses the entire
+## portal when any frame piece is removed (Minecraft behavior).
+func _destroy_adjacent_portals(broken_pos: Vector3i) -> void:
+	const NBRS: Array[Vector3i] = [
+		Vector3i(1, 0, 0), Vector3i(-1, 0, 0),
+		Vector3i(0, 1, 0), Vector3i(0, -1, 0),
+		Vector3i(0, 0, 1), Vector3i(0, 0, -1),
+	]
+	# Check each neighbor of the broken obsidian for portal blocks.
+	for off: Vector3i in NBRS:
+		var start: Vector3i = broken_pos + off
+		if get_voxel(start.x, start.y, start.z) != Chunk.Block.NETHER_PORTAL:
+			continue
+		# Flood-fill to find all connected portal blocks and destroy them.
+		var visited: Dictionary = {start: true}
+		var queue: Array[Vector3i] = [start]
+		while not queue.is_empty():
+			var p: Vector3i = queue.pop_front()
+			set_voxel(p.x, p.y, p.z, Chunk.Block.AIR)
+			if light_emitters.has(p):
+				light_emitters.erase(p)
+			for n: Vector3i in NBRS:
+				var np: Vector3i = p + n
+				if visited.has(np):
+					continue
+				visited[np] = true
+				if get_voxel(np.x, np.y, np.z) == Chunk.Block.NETHER_PORTAL:
+					queue.append(np)
 
 
 ## Delete every breakable block within Chebyshev-radius `radius` of `center`
@@ -2054,6 +2169,206 @@ func _place_trees(rng: RandomNumberGenerator) -> void:
 
 
 # --- Async regeneration (emits progress signal) ---
+
+## Generate a nether dimension. Reuses the same terrain shape but replaces
+## all surface/sub blocks with netherrack, skips trees/flowers, and places
+## nether-specific ores (gold + quartz) on the surface and underground.
+func regenerate_nether(size: int, seed: int) -> void:
+	generation_progress.emit(0.02, "Clearing old world...")
+	_water_pending.clear()
+	_water_accumulator = 0.0
+	await get_tree().process_frame
+	for chunk: Chunk in chunks.values():
+		chunk.queue_free()
+	chunks.clear()
+	await get_tree().process_frame
+	await get_tree().process_frame
+
+	world_size_blocks = size
+	world_size_chunks = size / CHUNK_SIZE
+	current_terrain_type = TerrainType.VANILLA_DEFAULT
+	world_seed = seed if seed != 0 else _random_seed()
+	# Use a different noise seed so terrain differs from overworld.
+	ChunkGen.configure_noise(noise, biome_noise, world_seed ^ 0xDEADBEEF, TerrainType.VANILLA_DEFAULT)
+	dimension = 1
+
+	generation_progress.emit(0.05, "Creating nether chunks...")
+	await get_tree().process_frame
+	_create_terrain_chunks()
+
+	generation_progress.emit(0.10, "Generating nether terrain...")
+	await get_tree().process_frame
+
+	# Nether terrain: netherrack everywhere instead of grass/dirt/stone.
+	var total_cols: int = world_size_chunks * world_size_chunks
+	var terrain_batch: int = maxi(1, total_cols / 20)
+	for i: int in total_cols:
+		_gen_nether_column(i)
+		if (i + 1) % terrain_batch == 0:
+			generation_progress.emit(0.10 + 0.25 * float(i + 1) / float(total_cols), "Generating nether... %d/%d" % [i + 1, total_cols])
+			await get_tree().process_frame
+
+	generation_progress.emit(0.38, "Placing nether features...")
+	await get_tree().process_frame
+	var feature_rng := RandomNumberGenerator.new()
+	feature_rng.seed = world_seed ^ 0xDEADBEEF
+	# Lava pools instead of water pools (more of them).
+	_place_nether_lava_pools(feature_rng)
+	# Caves
+	_carve_caves(feature_rng)
+	# Nether ores: gold and quartz replace netherrack.
+	_place_nether_ores(feature_rng)
+	# No trees, no flowers in the nether.
+
+	generation_progress.emit(0.42, "Building meshes...")
+	await get_tree().process_frame
+
+	var all_chunks: Array = chunks.values()
+	var total: int = all_chunks.size()
+	var mesh_batch: int = maxi(1, total / 40)
+	var meshed: int = 0
+	for j: int in total:
+		var chunk: Chunk = all_chunks[j]
+		if _chunk_has_solid(chunk):
+			chunk._padded = _build_padded(chunk)
+			chunk._use_padded = true
+			chunk.generate_mesh(material, water_material)
+			chunk._use_padded = false
+			chunk._padded = PackedByteArray()
+			meshed += 1
+		if (j + 1) % mesh_batch == 0 or j == total - 1:
+			generation_progress.emit(0.42 + 0.55 * float(j + 1) / float(total), "Building meshes... %d/%d" % [meshed, total])
+			await get_tree().process_frame
+
+	_setup_world_bounds()
+	_scan_light_emitters()
+	generation_progress.emit(1.0, "Done!")
+
+
+## Nether column generation — same terrain shape but all netherrack.
+func _gen_nether_column(i: int) -> void:
+	var cx: int = i / world_size_chunks
+	var cz: int = i % world_size_chunks
+	var max_cy: int = _max_terrain_chunk_y()
+	var col: Array = []
+	col.resize(max_cy)
+	for cy: int in max_cy:
+		col[cy] = chunks[Vector3i(cx, cy, cz)]
+	for lx: int in CHUNK_SIZE:
+		for lz: int in CHUNK_SIZE:
+			var wx: int = cx * CHUNK_SIZE + lx
+			var wz: int = cz * CHUNK_SIZE + lz
+			var height: int = get_terrain_height(wx, wz)
+			(col[0] as Chunk).set_voxel(lx, 0, lz, Chunk.Block.WORLD_BEDROCK)
+			for wy: int in range(1, height + 1):
+				# All netherrack — no dirt/grass distinction.
+				(col[wy >> 4] as Chunk).set_voxel(lx, wy & 15, lz, Chunk.Block.NETHERRACK)
+
+
+## Nether lava pools — more frequent than overworld water pools.
+func _place_nether_lava_pools(rng: RandomNumberGenerator) -> void:
+	var attempts: int = maxi(10, (world_size_blocks * world_size_blocks) / 128)
+	for _i: int in attempts:
+		var cx: int = rng.randi_range(4, world_size_blocks - 5)
+		var cz: int = rng.randi_range(4, world_size_blocks - 5)
+		var gy: int = _find_surface_y(cx, cz)
+		if gy < 2:
+			continue
+		if rng.randf() > 0.35:
+			continue
+		var radius: int = rng.randi_range(2, 3)
+		var lava_y: int = gy - 1
+		if lava_y < 1:
+			continue
+		var flat: bool = true
+		for dx: int in range(-radius, radius + 1):
+			for dz: int in range(-radius, radius + 1):
+				if absi(dx) + absi(dz) > radius:
+					continue
+				var tx: int = cx + dx
+				var tz: int = cz + dz
+				if tx < 1 or tz < 1 or tx >= world_size_blocks - 1 or tz >= world_size_blocks - 1:
+					flat = false
+					break
+				if _find_surface_y(tx, tz) != gy:
+					flat = false
+					break
+			if not flat:
+				break
+		if not flat:
+			continue
+		for dx: int in range(-radius, radius + 1):
+			for dz: int in range(-radius, radius + 1):
+				if absi(dx) + absi(dz) > radius:
+					continue
+				var tx: int = cx + dx
+				var tz: int = cz + dz
+				_gen_set(tx, gy, tz, Chunk.Block.AIR)
+				_gen_set(tx, lava_y, tz, Chunk.Block.LAVA)
+				# Set lava level for the static pool.
+				var cp := Vector3i(tx >> 4, lava_y >> 4, tz >> 4)
+				var ch: Chunk = chunks.get(cp)
+				if ch != null:
+					ch.water_level[(tx & 15) + ((lava_y & 15) << 4) + ((tz & 15) << 8)] = 1
+
+
+## Nether ores — gold and quartz scattered through netherrack, more on surface.
+func _place_nether_ores(rng: RandomNumberGenerator) -> void:
+	var size: int = world_size_blocks
+	var area: int = size * size
+	# Nether gold: common on surface, decent underground.
+	var gold_count: int = int(float(area) * 18.0 / 1000.0)
+	for _i: int in gold_count:
+		var x: int = rng.randi_range(1, size - 2)
+		var z: int = rng.randi_range(1, size - 2)
+		var surface: int = _find_surface_y(x, z)
+		if surface < 4:
+			continue
+		# Surface bias: 60% on top 3 blocks, 40% underground.
+		var y: int
+		if rng.randf() < 0.6:
+			y = rng.randi_range(maxi(1, surface - 3), surface)
+		else:
+			y = rng.randi_range(1, surface)
+		_place_nether_ore_vein(x, y, z, rng.randi_range(2, 6), Chunk.Block.NETHER_GOLD_ORE, rng)
+
+	# Nether quartz: also common, slightly deeper bias.
+	var quartz_count: int = int(float(area) * 15.0 / 1000.0)
+	for _i: int in quartz_count:
+		var x: int = rng.randi_range(1, size - 2)
+		var z: int = rng.randi_range(1, size - 2)
+		var surface: int = _find_surface_y(x, z)
+		if surface < 4:
+			continue
+		var y: int
+		if rng.randf() < 0.4:
+			y = rng.randi_range(maxi(1, surface - 3), surface)
+		else:
+			y = rng.randi_range(1, surface)
+		_place_nether_ore_vein(x, y, z, rng.randi_range(3, 8), Chunk.Block.NETHER_QUARTZ_ORE, rng)
+
+
+func _place_nether_ore_vein(cx: int, cy: int, cz: int, count: int, block: int, rng: RandomNumberGenerator) -> void:
+	var placed: int = 0
+	var attempts: int = 0
+	var x: int = cx; var y: int = cy; var z: int = cz
+	var size: int = world_size_blocks
+	while placed < count and attempts < count * 3:
+		attempts += 1
+		x += rng.randi_range(-1, 1)
+		y += rng.randi_range(-1, 1)
+		z += rng.randi_range(-1, 1)
+		if x < 0 or x >= size or y < 1 or y >= size or z < 0 or z >= size:
+			continue
+		var cp := Vector3i(x >> 4, y >> 4, z >> 4)
+		var chunk: Chunk = chunks.get(cp)
+		if chunk == null:
+			continue
+		var idx: int = (x & 15) + ((y & 15) << 4) + ((z & 15) << 8)
+		if chunk.voxels[idx] == Chunk.Block.NETHERRACK:
+			chunk.voxels[idx] = block
+			placed += 1
+
 
 func regenerate(size: int, terrain_type: int, seed: int = 0) -> void:
 	generation_progress.emit(0.02, "Clearing old world...")

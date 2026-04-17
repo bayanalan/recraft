@@ -616,12 +616,6 @@ func _build_main() -> void:
 	btn_menu.pressed.connect(func(): main_menu_requested.emit())
 	_content.add_child(btn_menu)
 
-	_content.add_child(_make_separator(6))
-
-	var btn_quit := _make_button("Quit", 280)
-	btn_quit.pressed.connect(func(): quit_requested.emit())
-	_content.add_child(btn_quit)
-
 
 # --- Save screen ---
 

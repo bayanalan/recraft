@@ -61,6 +61,10 @@ enum Block {
 	POPPY = 46,
 	DANDELION = 47,
 	TORCH = 48,
+	NETHERRACK = 49,
+	NETHER_GOLD_ORE = 50,
+	NETHER_QUARTZ_ORE = 51,
+	NETHER_PORTAL = 52,
 }
 
 # Face direction constants
@@ -407,6 +411,10 @@ static func _tile_index(block_type: int, face_dir: int) -> float:
 		Block.POPPY: return 48.0
 		Block.DANDELION: return 49.0
 		Block.TORCH: return 50.0
+		Block.NETHERRACK: return 51.0
+		Block.NETHER_GOLD_ORE: return 52.0
+		Block.NETHER_QUARTZ_ORE: return 53.0
+		Block.NETHER_PORTAL: return 54.0
 		Block.WORLD_BEDROCK: return 13.0  # same texture as BEDROCK
 		Block.WATER: return 32.0
 	return 0.0
@@ -427,6 +435,8 @@ static func _is_opaque_neighbor(b: int) -> bool:
 	if b == Block.SMOOTH_STONE_SLAB:
 		return false
 	if b == Block.POPPY or b == Block.DANDELION or b == Block.TORCH:
+		return false
+	if b == Block.NETHER_PORTAL:
 		return false
 	return true
 
@@ -693,6 +703,48 @@ func _write_plant_quad(slot_start: int, bx: int, by: int, bz: int, block_type: i
 		_colors[vi] = Color(1, 1, 1, 1)
 
 
+## Write a thin vertical pane for a nether portal block. The pane is
+## centered in the Z axis of the cell (0.1 blocks thick) so it reads as a
+## shimmering membrane you walk through, not a solid cube. Auto-detects
+## orientation: if there's a portal neighbor in ±X it aligns to the XY plane,
+## otherwise ZY.
+func _write_portal_pane(slot_start: int, bx: int, by: int, bz: int) -> void:
+	var origin := Vector3(bx, by, bz)
+	var tile: float = _tile_index(Block.NETHER_PORTAL, DIR_YP)
+	var tile_uv2 := Vector2(tile, 0.0)
+	# Detect orientation: align to whichever axis has portal neighbors.
+	var nx: int = get_voxel(bx + 1, by, bz)
+	var nxm: int = get_voxel(bx - 1, by, bz)
+	var align_x: bool = nx == Block.NETHER_PORTAL or nxm == Block.NETHER_PORTAL \
+		or nx == Block.OBSIDIAN or nxm == Block.OBSIDIAN
+	var a: Vector3; var b: Vector3; var c: Vector3; var d: Vector3
+	if align_x:
+		# Pane in XY plane, thin in Z.
+		a = origin + Vector3(0, 0, 0.45)
+		b = origin + Vector3(1, 0, 0.45)
+		c = origin + Vector3(1, 1, 0.45)
+		d = origin + Vector3(0, 1, 0.45)
+	else:
+		# Pane in ZY plane, thin in X.
+		a = origin + Vector3(0.45, 0, 0)
+		b = origin + Vector3(0.45, 0, 1)
+		c = origin + Vector3(0.45, 1, 1)
+		d = origin + Vector3(0.45, 1, 0)
+	var verts := [a, b, c, a, c, d]
+	var uvs := [
+		Vector2(0, 1), Vector2(1, 1), Vector2(1, 0),
+		Vector2(0, 1), Vector2(1, 0), Vector2(0, 0),
+	]
+	var normal := Vector3(0, 0, 1) if align_x else Vector3(1, 0, 0)
+	for i: int in 6:
+		var vi: int = slot_start + i
+		_verts[vi] = verts[i]
+		_normals[vi] = normal
+		_uvs[vi] = uvs[i]
+		_uv2s[vi] = tile_uv2
+		_colors[vi] = Color(1, 1, 1, 1)
+
+
 ## Auto-detect torch orientation from surrounding blocks. If there's a solid
 ## block directly below → upright (0). Otherwise scan N/S/E/W for a solid
 ## neighbor and return the facing that leans toward it. Falls back to upright.
@@ -783,6 +835,14 @@ func _rebuild_block_faces(x: int, y: int, z: int) -> void:
 
 	var block: int = get_voxel(x, y, z)
 	if block == Block.AIR:
+		return
+
+	# Portal pane — thin vertical quad.
+	if block == Block.NETHER_PORTAL:
+		var ps: int = _alloc_slot()
+		_write_portal_pane(ps, x, y, z)
+		_has_noncollidable_faces = true
+		_block_slots[key] = PackedInt32Array([ps])
 		return
 
 	# Plant mesh (fire, flowers, torches): two crossed quads.
@@ -913,6 +973,14 @@ func build_mesh_data(mat: Material = null, water_mat: Material = null) -> void:
 			for x: int in SIZE:
 				var block: int = voxels[x + vy + vz]
 				if block == Block.AIR:
+					continue
+
+				# Portal: thin vertical pane centered in the cell.
+				if block == Block.NETHER_PORTAL:
+					var ps: int = _alloc_slot()
+					_write_portal_pane(ps, x, y, z)
+					_has_noncollidable_faces = true
+					_block_slots[Vector3i(x, y, z)] = PackedInt32Array([ps])
 					continue
 
 				if _is_plant(block):
@@ -1174,7 +1242,7 @@ func _apply_mesh() -> void:
 			var k: int = 0
 			while k < s_count:
 				var tid: float = solid_uv2s[k].x
-				if tid != 44.0 and tid != 45.0 and tid != 48.0 and tid != 49.0 and tid != 50.0:
+				if tid != 44.0 and tid != 45.0 and tid != 48.0 and tid != 49.0 and tid != 50.0 and tid != 54.0:
 					for jj: int in 6:
 						col_verts[cc + jj] = solid_verts[k + jj]
 					cc += 6

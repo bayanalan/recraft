@@ -30,9 +30,10 @@ uniform vec3 ambient_light = vec3(0.20, 0.22, 0.28);
 // frame. xyz = world position, w = light level (0-16). Warm orange tint.
 uniform int block_light_count = 0;
 uniform vec4 block_lights[64];
-const float ATLAS_TILES = 51.0;
+const float ATLAS_TILES = 55.0;
 const float GLASS_TILE = 8.0;
 const float BARRIER_TILE = 47.0;
+const float PORTAL_TILE = 54.0;
 const float FRAME_PX = 1.0 / 16.0;
 
 varying vec3 world_pos;
@@ -80,8 +81,35 @@ void fragment() {
 			if (tile_uv.y >= 1.0 - FRAME_PX && (mask & 8) != 0) discard;
 		}
 	}
+	// Nether portal: animated pixel-art texture. Uses world-space UVs so
+	// adjacent portal blocks tile seamlessly, quantized to the 16-pixel grid
+	// so it reads as blocky pixels, not a smooth gradient. The pattern scrolls
+	// upward over time for a "flowing energy" effect.
+	bool is_portal = abs(tile_idx - PORTAL_TILE) < 0.5;
+	if (is_portal) {
+		// World-space UVs based on face normal — same approach as water so
+		// adjacent portals connect seamlessly regardless of orientation.
+		vec3 an2 = abs(n);
+		vec2 wuv;
+		if (an2.y > 0.5) {
+			wuv = vec2(world_pos.x, world_pos.z);
+		} else if (an2.x > 0.5) {
+			wuv = vec2(world_pos.z, world_pos.y);
+		} else {
+			wuv = vec2(world_pos.x, world_pos.y);
+		}
+		// Scroll upward and quantize to 16 pixels per block for pixel-art look.
+		wuv.y += TIME * 0.4;
+		vec2 pixel_uv = floor(wuv * 16.0) / 16.0;
+		// Two-tone pattern from the atlas tile — sample the static purple
+		// texture with the scrolling world-space UV so each pixel maps to a
+		// distinct atlas texel and the pattern tiles + animates.
+		vec2 atlas_scroll = vec2((PORTAL_TILE + fract(pixel_uv.x)) / ATLAS_TILES, fract(pixel_uv.y));
+		tex_sample = texture(block_atlas, atlas_scroll);
+	}
+
 	// Alpha-cutout (glass center pixels are 0.3 alpha; frames are 1.0).
-	if (tex_sample.a < 0.5) {
+	if (tex_sample.a < 0.5 && !is_portal) {
 		discard;
 	}
 	vec3 tex_color = tex_sample.rgb;
@@ -131,5 +159,12 @@ void fragment() {
 	float dist_fog = smoothstep(fade_start, fade_end, cam_dist);
 	color = mix(color, fog_color, dist_fog);
 
-	ALBEDO = clamp(color, vec3(0.0), vec3(1.0));
+	// Portal blocks glow — bypass lighting, render at full emissive color.
+	// No ALPHA write — writing ALPHA anywhere forces the entire shader into
+	// transparency mode (no depth writes), which makes ALL blocks see-through.
+	if (is_portal) {
+		ALBEDO = tex_color;
+	} else {
+		ALBEDO = clamp(color, vec3(0.0), vec3(1.0));
+	}
 }
