@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(curl -s \"https://www.google.com/search?q=godot+4+ArrayMesh+garbage+collection+pressure+add_surface_from_arrays+performance+cost\")",
+      "WebSearch",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:docs.godotengine.org)",
+      "WebFetch(domain:www.golden-tamarin.com)",
+      "WebFetch(domain:forum.godotengine.org)"
+    ]
+  }
+}
