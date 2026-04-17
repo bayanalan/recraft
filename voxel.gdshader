@@ -25,7 +25,12 @@ uniform vec3 fog_color : source_color = vec3(0.53, 0.76, 0.98);
 // directional sun shadows, just uniform sky brightness that dims at night.
 uniform vec3 sky_light = vec3(0.32, 0.30, 0.26);
 uniform vec3 ambient_light = vec3(0.20, 0.22, 0.28);
-const float ATLAS_TILES = 50.0;
+
+// Block point lights — up to 64 nearby emitters pushed by main.gd each
+// frame. xyz = world position, w = light level (0-16). Warm orange tint.
+uniform int block_light_count = 0;
+uniform vec4 block_lights[64];
+const float ATLAS_TILES = 51.0;
 const float GLASS_TILE = 8.0;
 const float BARRIER_TILE = 47.0;
 const float FRAME_PX = 1.0 / 16.0;
@@ -81,10 +86,23 @@ void fragment() {
 	}
 	vec3 tex_color = tex_sample.rgb;
 
-	// Minecraft-style uniform sky light — no directional shadows. All faces
-	// get the same sky brightness; face_shade below handles the top-vs-side
-	// shading that gives blocks their 3D read.
+	// Minecraft-style uniform sky light — no directional shadows.
 	vec3 light = ambient_light + sky_light;
+
+	// Block point lights — warm orange glow, linear falloff to zero at the
+	// emitter's radius. Accumulates the brightest contribution (max, not sum)
+	// to avoid overlapping torches producing washed-out white.
+	float block_glow = 0.0;
+	for (int i = 0; i < block_light_count; i++) {
+		vec3 lpos = block_lights[i].xyz;
+		float level = block_lights[i].w;
+		float dist = length(world_pos - lpos);
+		float radius = level;  // light level = reach in blocks
+		float atten = max(0.0, 1.0 - dist / radius);
+		block_glow = max(block_glow, atten);
+	}
+	// Warm torch tint — orange-ish so it reads as firelight.
+	light += vec3(0.9, 0.65, 0.3) * block_glow * 0.55;
 
 	// Face-based shading
 	float face_shade = 0.72 + 0.28 * an.y + 0.08 * an.x;

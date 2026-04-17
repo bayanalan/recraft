@@ -3,7 +3,7 @@ class_name BlockIcon
 # Shared helper for drawing a block as an isometric 3D icon.
 # Used by both the hotbar and the block select (inventory) screen.
 
-const ATLAS_TILES: float = 50.0
+const ATLAS_TILES: float = 51.0
 const CUBE_H: float = 1.2
 
 # Face tints approximate the ratio between top/side faces under the world's
@@ -65,6 +65,7 @@ static func get_tiles(block_type: int) -> Vector2i:
 		Chunk.Block.POPPY: return Vector2i(48, 48)
 		Chunk.Block.DANDELION: return Vector2i(49, 49)
 		Chunk.Block.WATER: return Vector2i(32, 32)
+		Chunk.Block.TORCH: return Vector2i(50, 50)
 	return Vector2i(0, 0)
 
 
@@ -116,6 +117,7 @@ static func get_block_name(block_type: int) -> String:
 		Chunk.Block.POPPY: return "Poppy"
 		Chunk.Block.DANDELION: return "Dandelion"
 		Chunk.Block.WATER: return "Water"
+		Chunk.Block.TORCH: return "Torch"
 	return "Unknown"
 
 
@@ -124,7 +126,8 @@ static func get_block_name(block_type: int) -> String:
 static func _is_sprite_block(block_type: int) -> bool:
 	return block_type == Chunk.Block.FIRE \
 		or block_type == Chunk.Block.POPPY \
-		or block_type == Chunk.Block.DANDELION
+		or block_type == Chunk.Block.DANDELION \
+		or block_type == Chunk.Block.TORCH
 
 
 # Draw an isometric 3D block at center (cx, cy) with size s (half-width of top diamond).

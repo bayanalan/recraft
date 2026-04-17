@@ -16,9 +16,24 @@ const BOTTOM_MARGIN: float = 60.0       # above the hotbar
 var _open: bool = false
 var _input_line: LineEdit = null
 var _msg_container: VBoxContainer = null
-# Each entry: { "label": Label, "time": float (time remaining before fade starts) }
 var _messages: Array = []
 var _font: Font = null
+
+# Command history — up/down arrows cycle through previous commands.
+var _history: Array[String] = []
+var _history_idx: int = -1  # -1 = not browsing history
+var _saved_input: String = ""  # what user typed before browsing
+
+# Tab completion data.
+const COMMANDS: Array[String] = ["/time", "/tick", "/gamerule", "/noclip"]
+const COMPLETIONS: Dictionary = {
+	"/time": ["set"],
+	"/time set": ["day", "night", "noon", "midnight"],
+	"/tick": ["rate"],
+	"/gamerule": ["dodaylightcycle"],
+	"/gamerule dodaylightcycle": ["true", "false"],
+	"/noclip": ["true", "false"],
+}
 
 
 func _ready() -> void:
@@ -94,10 +109,13 @@ func _process(delta: float) -> void:
 func _unhandled_input(event: InputEvent) -> void:
 	if not (event is InputEventKey) or not event.pressed:
 		return
-	# Enter opens the chat when closed.
-	if event.keycode == KEY_ENTER and not _open:
-		_open_chat()
-		get_viewport().set_input_as_handled()
+	if not _open:
+		if event.keycode == KEY_ENTER:
+			_open_chat()
+			get_viewport().set_input_as_handled()
+		elif event.keycode == KEY_SLASH:
+			_open_chat("/")
+			get_viewport().set_input_as_handled()
 
 
 func _input(event: InputEvent) -> void:
@@ -111,12 +129,22 @@ func _input(event: InputEvent) -> void:
 	elif event.keycode == KEY_ESCAPE:
 		_close_chat()
 		get_viewport().set_input_as_handled()
+	elif event.keycode == KEY_UP:
+		_history_prev()
+		get_viewport().set_input_as_handled()
+	elif event.keycode == KEY_DOWN:
+		_history_next()
+		get_viewport().set_input_as_handled()
+	elif event.keycode == KEY_TAB:
+		_tab_complete()
+		get_viewport().set_input_as_handled()
 
 
-func _open_chat() -> void:
+func _open_chat(prefill: String = "") -> void:
 	_open = true
 	_input_line.visible = true
-	_input_line.text = ""
+	_input_line.text = prefill
+	_input_line.caret_column = prefill.length()
 	_input_line.grab_focus()
 	# Make all existing messages fully visible while chat is open.
 	for entry: Dictionary in _messages:
@@ -131,9 +159,200 @@ func _close_chat() -> void:
 
 func _send_and_close() -> void:
 	var text: String = _input_line.text.strip_edges()
-	if not text.is_empty():
+	if text.is_empty():
+		_close_chat()
+		return
+	# Push to history (avoid duplicating the last entry).
+	if _history.is_empty() or _history[_history.size() - 1] != text:
+		_history.append(text)
+	_history_idx = -1
+	if text.begins_with("/"):
+		_execute_command(text)
+	else:
 		add_message("<You> " + text)
 	_close_chat()
+
+
+func _history_prev() -> void:
+	if _history.is_empty():
+		return
+	if _history_idx == -1:
+		_saved_input = _input_line.text
+		_history_idx = _history.size() - 1
+	elif _history_idx > 0:
+		_history_idx -= 1
+	_input_line.text = _history[_history_idx]
+	_input_line.caret_column = _input_line.text.length()
+
+
+func _history_next() -> void:
+	if _history_idx == -1:
+		return
+	_history_idx += 1
+	if _history_idx >= _history.size():
+		_history_idx = -1
+		_input_line.text = _saved_input
+	else:
+		_input_line.text = _history[_history_idx]
+	_input_line.caret_column = _input_line.text.length()
+
+
+func _tab_complete() -> void:
+	var text: String = _input_line.text
+	if not text.begins_with("/"):
+		return
+	var parts: PackedStringArray = text.split(" ", false)
+	# Build the prefix key for lookup (all parts except the last incomplete one).
+	# If text ends with a space, the user wants completions for the NEXT argument.
+	var ends_with_space: bool = text.ends_with(" ")
+	var prefix_parts: PackedStringArray
+	var partial: String
+	if ends_with_space:
+		prefix_parts = parts
+		partial = ""
+	else:
+		prefix_parts = parts.slice(0, parts.size() - 1)
+		partial = parts[parts.size() - 1].to_lower() if parts.size() > 0 else ""
+	# If we're completing the command itself (first word).
+	if prefix_parts.is_empty():
+		var matches: Array[String] = []
+		for cmd: String in COMMANDS:
+			if cmd.begins_with(partial):
+				matches.append(cmd)
+		if matches.size() == 1:
+			_input_line.text = matches[0] + " "
+			_input_line.caret_column = _input_line.text.length()
+		elif matches.size() > 1:
+			add_message("Options: " + " ".join(matches))
+		return
+	# Completing an argument — build the lookup key from prefix parts.
+	var key: String = " ".join(prefix_parts).to_lower()
+	if not COMPLETIONS.has(key):
+		return
+	var options: Array = COMPLETIONS[key]
+	var matches: Array[String] = []
+	for opt: String in options:
+		if partial.is_empty() or opt.begins_with(partial):
+			matches.append(opt)
+	if matches.size() == 1:
+		var completed: String = " ".join(prefix_parts) + " " + matches[0] + " "
+		_input_line.text = completed
+		_input_line.caret_column = _input_line.text.length()
+	elif matches.size() > 1:
+		add_message("Options: " + " ".join(matches))
+
+
+## Find the main node (game scene root) to access game rules + day/night.
+func _get_main() -> Node:
+	# Chat is HUD → Main. Walk up to find the node with the game rule vars.
+	var n: Node = self
+	while n != null:
+		if n.has_method("_update_day_night"):
+			return n
+		n = n.get_parent()
+	# Fallback: try the tree root's first child (main scene root).
+	return get_tree().current_scene
+
+
+func _execute_command(text: String) -> void:
+	var parts: PackedStringArray = text.strip_edges().split(" ", false)
+	if parts.is_empty():
+		return
+	var cmd: String = parts[0].to_lower()
+
+	match cmd:
+		"/time":
+			_cmd_time(parts)
+		"/tick":
+			_cmd_tick(parts)
+		"/gamerule":
+			_cmd_gamerule(parts)
+		"/noclip":
+			_cmd_noclip(parts)
+		_:
+			add_message("Unknown command: " + cmd)
+
+
+func _cmd_time(parts: PackedStringArray) -> void:
+	# /time set day|night|noon|midnight
+	if parts.size() < 3 or parts[1].to_lower() != "set":
+		add_message("Usage: /time set <day|night|noon|midnight>")
+		return
+	var main: Node = _get_main()
+	if main == null:
+		add_message("Cannot access game state")
+		return
+	var value: String = parts[2].to_lower()
+	match value:
+		"day":
+			main.set("_day_time", 0.0)     # dawn
+			add_message("Time set to day")
+		"noon":
+			main.set("_day_time", 0.25)    # noon
+			add_message("Time set to noon")
+		"night":
+			main.set("_day_time", 0.5)     # dusk → night
+			add_message("Time set to night")
+		"midnight":
+			main.set("_day_time", 0.75)    # midnight
+			add_message("Time set to midnight")
+		_:
+			add_message("Unknown time: " + value + ". Use day/night/noon/midnight")
+
+
+func _cmd_tick(parts: PackedStringArray) -> void:
+	# /tick rate <number>
+	if parts.size() < 3 or parts[1].to_lower() != "rate":
+		add_message("Usage: /tick rate <number> (base: 20)")
+		return
+	var main: Node = _get_main()
+	if main == null:
+		add_message("Cannot access game state")
+		return
+	if not parts[2].is_valid_float():
+		add_message("Invalid number: " + parts[2])
+		return
+	var rate: float = clampf(float(parts[2]), 0.1, 10000.0)
+	main.set("tick_rate", rate)
+	add_message("Tick rate set to " + str(rate))
+
+
+func _cmd_gamerule(parts: PackedStringArray) -> void:
+	# /gamerule dodaylightcycle true|false
+	if parts.size() < 3:
+		add_message("Usage: /gamerule <rule> <true|false>")
+		return
+	var main: Node = _get_main()
+	if main == null:
+		add_message("Cannot access game state")
+		return
+	var rule: String = parts[1].to_lower()
+	var val: String = parts[2].to_lower()
+	var bool_val: bool = val == "true"
+	match rule:
+		"dodaylightcycle":
+			main.set("do_daylight_cycle", bool_val)
+			add_message("dodaylightcycle set to " + str(bool_val))
+		_:
+			add_message("Unknown gamerule: " + rule)
+
+
+func _cmd_noclip(parts: PackedStringArray) -> void:
+	# /noclip true|false
+	var main: Node = _get_main()
+	if main == null:
+		add_message("Cannot access game state")
+		return
+	if parts.size() < 2:
+		# Toggle if no argument
+		var current: bool = main.get("noclip")
+		main.set("noclip", not current)
+		add_message("Noclip " + ("enabled" if not current else "disabled"))
+		return
+	var val: String = parts[1].to_lower()
+	var enabled: bool = val == "true"
+	main.set("noclip", enabled)
+	add_message("Noclip " + ("enabled" if enabled else "disabled"))
 
 
 func add_message(text: String) -> void:

@@ -19,6 +19,7 @@ signal crouch_toggle_changed(is_toggle: bool)
 signal mipmaps_changed(enabled: bool)
 signal mouse_sensitivity_changed(value: int)
 signal quit_requested
+signal main_menu_requested
 
 var _current_screen: int = Screen.MAIN
 var _content: VBoxContainer
@@ -612,10 +613,7 @@ func _build_main() -> void:
 	_content.add_child(_make_separator(6))
 
 	var btn_menu := _make_button("Main Menu", 280)
-	btn_menu.pressed.connect(func():
-		get_tree().paused = false
-		get_tree().change_scene_to_file("res://main_menu.tscn")
-	)
+	btn_menu.pressed.connect(func(): main_menu_requested.emit())
 	_content.add_child(btn_menu)
 
 	_content.add_child(_make_separator(6))

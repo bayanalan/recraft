@@ -32,6 +32,40 @@ var water_material: ShaderMaterial
 var current_terrain_type: int = TerrainType.VANILLA_DEFAULT
 
 var particle_system: ParticleSystem = null
+# Deferred chunk rebuild queue for explosions — drained a few per frame so
+# large blasts don't freeze the game.
+var _explosion_rebuild_queue: Array[Vector3i] = []
+
+## Scan all loaded chunks for light-emitting blocks (torch, fire, lava) and
+## populate the `light_emitters` dict. Called once after world gen/load.
+func _scan_light_emitters() -> void:
+	light_emitters.clear()
+	for chunk: Chunk in chunks.values():
+		var cp: Vector3i = chunk.chunk_position
+		var bx: int = cp.x << 4
+		var by: int = cp.y << 4
+		var bz: int = cp.z << 4
+		for i: int in Chunk.VOLUME:
+			var b: int = chunk.voxels[i]
+			var lvl: int = get_block_light_level(b)
+			if lvl > 0:
+				var lx: int = i & 15
+				var ly: int = (i >> 4) & 15
+				var lz: int = (i >> 8) & 15
+				light_emitters[Vector3i(bx + lx, by + ly, bz + lz)] = lvl
+
+# Light emitters — tracks every torch/fire/lava position + level so main.gd
+# can push the nearest ones to the shader each frame.
+# Key: Vector3i (world pos), Value: int (light level 1-16)
+var light_emitters: Dictionary = {}
+
+## Returns the light level a block emits, or 0 if it doesn't emit.
+static func get_block_light_level(block: int) -> int:
+	match block:
+		Chunk.Block.TORCH: return 16
+		Chunk.Block.FIRE: return 12
+		Chunk.Block.LAVA: return 12
+	return 0
 var _bounds_body: StaticBody3D = null
 
 signal generation_progress(progress: float, status: String)
@@ -362,6 +396,9 @@ func break_block(origin: Vector3, direction: Vector3) -> bool:
 	if particle_system != null:
 		particle_system.spawn_break_burst(Vector3(pos) + Vector3(0.5, 0.5, 0.5), block)
 	set_voxel(pos.x, pos.y, pos.z, Chunk.Block.AIR)
+	# Remove light emitter if this block was one.
+	if light_emitters.has(pos):
+		light_emitters.erase(pos)
 	# Breaking a log can orphan nearby natural leaves — schedule them for
 	# decay. Placed leaves (water_level[idx] == 1) are skipped by the
 	# scheduler, so the check is safe.
@@ -417,7 +454,8 @@ func place_block(origin: Vector3, direction: Vector3, block_type: int, player_aa
 	var existing: int = get_voxel(place_pos.x, place_pos.y, place_pos.z)
 	if existing != Chunk.Block.AIR and existing != Chunk.Block.WATER \
 		and existing != Chunk.Block.LAVA and existing != Chunk.Block.FIRE \
-		and existing != Chunk.Block.POPPY and existing != Chunk.Block.DANDELION:
+		and existing != Chunk.Block.POPPY and existing != Chunk.Block.DANDELION \
+		and existing != Chunk.Block.TORCH:
 		return false
 	# Prevent trapping the player inside a solid block; water is non-collidable
 	# so placing water on the player is fine.
@@ -437,16 +475,19 @@ func place_block(origin: Vector3, direction: Vector3, block_type: int, player_aa
 	elif block_type == Chunk.Block.LAVA:
 		set_lava_voxel(place_pos.x, place_pos.y, place_pos.z, 1)
 		_lava_pending.append(place_pos)
+		light_emitters[place_pos] = get_block_light_level(Chunk.Block.LAVA)
 	elif block_type == Chunk.Block.TNT:
 		# TNT detonates instantly on placement — never actually occupies the
 		# voxel, so there's no primed-block stage. Creates a small radius
 		# crater and spawns break particles for feedback.
-		_explode(place_pos, 3)
+		_explode(place_pos, 3.0)
 	else:
 		set_voxel(place_pos.x, place_pos.y, place_pos.z, block_type)
+		# Track light emitters.
+		var emit_lvl: int = get_block_light_level(block_type)
+		if emit_lvl > 0:
+			light_emitters[place_pos] = emit_lvl
 		# Tag player-placed leaves so the decay ticker leaves them alone.
-		# water_level is unused by non-fluids, so we repurpose it as a
-		# 1-byte "placed" flag just for LEAVES.
 		if block_type == Chunk.Block.LEAVES:
 			var cp := Vector3i(place_pos.x >> 4, place_pos.y >> 4, place_pos.z >> 4)
 			var chunk: Chunk = chunks.get(cp)
@@ -459,27 +500,83 @@ func place_block(origin: Vector3, direction: Vector3, block_type: int, player_aa
 ## Delete every breakable block within Chebyshev-radius `radius` of `center`
 ## (cube neighborhood). Spawns particles for each destroyed block so the
 ## explosion reads visually. Unbreakable blocks (WORLD_BEDROCK) survive.
-func _explode(center: Vector3i, radius: int) -> void:
-	for dx: int in range(-radius, radius + 1):
-		for dy: int in range(-radius, radius + 1):
-			for dz: int in range(-radius, radius + 1):
-				var p: Vector3i = center + Vector3i(dx, dy, dz)
+## Spherical explosion. `radius` is in blocks — anything within that
+## euclidean distance of `center` is destroyed. Batches all voxel writes
+## first, then rebuilds each affected chunk ONCE (not per-block) to
+## eliminate the stutter the old per-block set_voxel loop caused.
+func _explode(center: Vector3i, radius: float) -> void:
+	var r_i: int = int(ceil(radius))
+	var r2: float = radius * radius
+	var size: int = world_size_blocks
+	# Phase 1: collect positions to destroy. Particles are limited to ~12
+	# random blocks (not all 100+) to avoid flooding the particle pool and
+	# causing a stutter — the visual feedback is the same "explosion cloud"
+	# but at a fraction of the CPU/GPU cost.
+	var destroyed: Array[Vector3i] = []
+	var particle_candidates: Array[Vector3i] = []
+	for dx: int in range(-r_i, r_i + 1):
+		for dy: int in range(-r_i, r_i + 1):
+			for dz: int in range(-r_i, r_i + 1):
+				if float(dx * dx + dy * dy + dz * dz) > r2:
+					continue
+				var p := Vector3i(center.x + dx, center.y + dy, center.z + dz)
 				if p.x < 0 or p.y < 0 or p.z < 0:
 					continue
-				if p.x >= world_size_blocks or p.y >= world_size_blocks or p.z >= world_size_blocks:
+				if p.x >= size or p.y >= size or p.z >= size:
 					continue
 				var b: int = get_voxel(p.x, p.y, p.z)
 				if b == Chunk.Block.AIR or b == Chunk.Block.WORLD_BEDROCK:
 					continue
-				if particle_system != null:
-					particle_system.spawn_break_burst(Vector3(p) + Vector3(0.5, 0.5, 0.5), b)
-				# Water sources caught in the blast drain their flow too.
-				if b == Chunk.Block.WATER:
-					var lvl: int = get_water_level_at(p.x, p.y, p.z)
-					if lvl <= 1:
-						_drain_water_component(p)
-						continue
-				set_voxel(p.x, p.y, p.z, Chunk.Block.AIR)
+				# Water and lava are just blasted to air — no expensive drain
+				# BFS that could traverse the entire connected body.
+				destroyed.append(p)
+				if b != Chunk.Block.WATER and b != Chunk.Block.LAVA:
+					particle_candidates.append(p)
+	# Spawn particles for a small random subset — uses stored block types
+	# so we don't need to re-query voxels (which may already be cleared).
+	if particle_system != null and not particle_candidates.is_empty():
+		particle_candidates.shuffle()
+		var count: int = mini(10, particle_candidates.size())
+		for i: int in count:
+			var p: Vector3i = particle_candidates[i]
+			var b: int = get_voxel(p.x, p.y, p.z)
+			if b > 0:
+				particle_system.spawn_break_burst(Vector3(p) + Vector3(0.5, 0.5, 0.5), b)
+	# Phase 2: write all voxels to AIR without triggering per-block mesh
+	# rebuilds. Direct chunk.voxels[idx] write skips set_voxel's rebuild.
+	var affected_chunks: Dictionary = {}  # Vector3i -> true
+	for p: Vector3i in destroyed:
+		var cp := Vector3i(p.x >> 4, p.y >> 4, p.z >> 4)
+		var chunk: Chunk = chunks.get(cp)
+		if chunk == null:
+			continue
+		var idx: int = (p.x & 15) + ((p.y & 15) << 4) + ((p.z & 15) << 8)
+		chunk.voxels[idx] = Chunk.Block.AIR
+		chunk.water_level[idx] = 0
+		if light_emitters.has(p):
+			light_emitters.erase(p)
+		affected_chunks[cp] = true
+		# Only add neighbor chunks if this block is on a chunk border (AO bleed).
+		var lx: int = p.x & 15; var ly: int = p.y & 15; var lz: int = p.z & 15
+		if lx == 0:  _mark_chunk(affected_chunks, cp.x - 1, cp.y, cp.z)
+		if lx == 15: _mark_chunk(affected_chunks, cp.x + 1, cp.y, cp.z)
+		if ly == 0:  _mark_chunk(affected_chunks, cp.x, cp.y - 1, cp.z)
+		if ly == 15: _mark_chunk(affected_chunks, cp.x, cp.y + 1, cp.z)
+		if lz == 0:  _mark_chunk(affected_chunks, cp.x, cp.y, cp.z - 1)
+		if lz == 15: _mark_chunk(affected_chunks, cp.x, cp.y, cp.z + 1)
+
+	# Phase 3: queue affected chunks for deferred rebuild — spread across
+	# frames so the explosion doesn't freeze the game while 20+ chunks
+	# re-mesh simultaneously. _process_explosion_queue drains a few per frame.
+	for acp: Vector3i in affected_chunks:
+		if not _explosion_rebuild_queue.has(acp):
+			_explosion_rebuild_queue.append(acp)
+
+
+func _mark_chunk(dict: Dictionary, cx: int, cy: int, cz: int) -> void:
+	var ncp := Vector3i(cx, cy, cz)
+	if chunks.has(ncp):
+		dict[ncp] = true
 
 
 # --- Water flow ---
@@ -700,6 +797,24 @@ func _process(delta: float) -> void:
 	# Grass spread + leaf decay housekeeping.
 	_tick_grass_spread(delta)
 	_tick_leaf_decay(delta)
+
+	# Drain explosion rebuild queue — up to 4 chunks per frame so the game
+	# stays responsive even for large blasts affecting 20+ chunks.
+	var rebuilds_this_frame: int = 0
+	while not _explosion_rebuild_queue.is_empty() and rebuilds_this_frame < 4:
+		var acp: Vector3i = _explosion_rebuild_queue.pop_front()
+		var ac: Chunk = chunks.get(acp)
+		if ac == null:
+			continue
+		if ac.mesh != ac._arr_mesh:
+			_detach_shared_mesh(ac)
+		else:
+			ac._padded = _build_padded(ac)
+			ac._use_padded = true
+			ac.generate_mesh(material, water_material)
+			ac._use_padded = false
+			ac._padded = PackedByteArray()
+		rebuilds_this_frame += 1
 
 
 ## Advance one tick of a fluid's spread. Shared between water and lava so
@@ -2017,6 +2132,7 @@ func regenerate(size: int, terrain_type: int, seed: int = 0) -> void:
 			await get_tree().process_frame
 
 	_setup_world_bounds()
+	_scan_light_emitters()
 	generation_progress.emit(1.0, "Done!")
 
 
@@ -2030,7 +2146,7 @@ func regenerate(size: int, terrain_type: int, seed: int = 0) -> void:
 ## size³ times. All-air regions of the output buffer are already zero from
 ## resize(), so chunks that don't exist contribute nothing. For a 512³
 ## world this collects in ~500ms instead of minutes.
-func save_to_file(save_name: String, player_pos: Vector3) -> bool:
+func save_to_file(save_name: String, player_pos: Vector3, game_state: Dictionary = {}) -> bool:
 	# "Preparing save..." — timer-based yield so the progress bar is visible
 	# even on small worlds (which otherwise finish between frames, invisible).
 	generation_progress.emit(0.04, "Preparing save...")
@@ -2069,7 +2185,7 @@ func save_to_file(save_name: String, player_pos: Vector3) -> bool:
 
 	generation_progress.emit(0.90, "Writing file...")
 	await get_tree().create_timer(0.10).timeout
-	var ok: bool = SaveSystem.save_world(save_name, size, data, player_pos, world_seed, current_terrain_type)
+	var ok: bool = SaveSystem.save_world(save_name, size, data, player_pos, world_seed, current_terrain_type, game_state)
 	generation_progress.emit(1.0, "Saved!" if ok else "Save failed!")
 	# Brief hold on the final state so the user registers the result.
 	await get_tree().create_timer(0.20).timeout
@@ -2270,4 +2386,5 @@ func load_from_save(size: int, voxel_data: PackedByteArray, seed: int = 0, terra
 					await get_tree().process_frame
 
 	_setup_world_bounds()
+	_scan_light_emitters()
 	generation_progress.emit(1.0, "Done!")

@@ -60,6 +60,7 @@ enum Block {
 	BARRIER = 45,
 	POPPY = 46,
 	DANDELION = 47,
+	TORCH = 48,
 }
 
 # Face direction constants
@@ -405,6 +406,7 @@ static func _tile_index(block_type: int, face_dir: int) -> float:
 		Block.BARRIER: return 47.0
 		Block.POPPY: return 48.0
 		Block.DANDELION: return 49.0
+		Block.TORCH: return 50.0
 		Block.WORLD_BEDROCK: return 13.0  # same texture as BEDROCK
 		Block.WATER: return 32.0
 	return 0.0
@@ -424,7 +426,7 @@ static func _is_opaque_neighbor(b: int) -> bool:
 		return false
 	if b == Block.SMOOTH_STONE_SLAB:
 		return false
-	if b == Block.POPPY or b == Block.DANDELION:
+	if b == Block.POPPY or b == Block.DANDELION or b == Block.TORCH:
 		return false
 	return true
 
@@ -636,24 +638,39 @@ func _free_slot(start: int) -> void:
 ## diagonal across the cell — two of these, rotated 90° to each other, create
 ## the classic Minecraft X-shape inside the voxel.
 ## `diagonal` is 0 for the -X,-Z → +X,+Z plane, 1 for +X,-Z → -X,+Z.
-func _write_plant_quad(slot_start: int, bx: int, by: int, bz: int, block_type: int, diagonal: int) -> void:
+func _write_plant_quad(slot_start: int, bx: int, by: int, bz: int, block_type: int, diagonal: int, facing: int = 0) -> void:
 	var origin := Vector3(bx, by, bz)
 	var tile: float = _tile_index(block_type, DIR_YP)
 	var tile_uv2 := Vector2(tile, 0.0)
-	# Small inset pushes the quad off the exact block edges so its alpha-cut
-	# outline never clips against an adjacent solid face.
 	const E: float = 0.001
 	var a: Vector3; var b: Vector3; var c: Vector3; var d: Vector3
 	if diagonal == 0:
-		a = origin + Vector3(E,   0, E)      # bottom near -X,-Z
-		b = origin + Vector3(1-E, 0, 1-E)    # bottom near +X,+Z
-		c = origin + Vector3(1-E, 1, 1-E)    # top    near +X,+Z
-		d = origin + Vector3(E,   1, E)      # top    near -X,-Z
+		a = origin + Vector3(E,   0, E)
+		b = origin + Vector3(1-E, 0, 1-E)
+		c = origin + Vector3(1-E, 1, 1-E)
+		d = origin + Vector3(E,   1, E)
 	else:
-		a = origin + Vector3(1-E, 0, E)      # bottom near +X,-Z
-		b = origin + Vector3(E,   0, 1-E)    # bottom near -X,+Z
-		c = origin + Vector3(E,   1, 1-E)    # top    near -X,+Z
-		d = origin + Vector3(1-E, 1, E)      # top    near +X,-Z
+		a = origin + Vector3(1-E, 0, E)
+		b = origin + Vector3(E,   0, 1-E)
+		c = origin + Vector3(E,   1, 1-E)
+		d = origin + Vector3(1-E, 1, E)
+	# Wall-mounted torch: the base (bottom) presses against the wall block,
+	# the flame tip (top) leans away. This matches Minecraft's wall torches
+	# where the stick visually connects to the wall face.
+	# facing: 0=upright, 1=south(+Z), 2=north(-Z), 3=east(+X), 4=west(-X).
+	if facing > 0 and block_type == Block.TORCH:
+		var wall_dir := Vector3.ZERO
+		match facing:
+			1: wall_dir = Vector3(0, 0, 1)   # wall is to the south (+Z)
+			2: wall_dir = Vector3(0, 0, -1)  # wall is to the north (-Z)
+			3: wall_dir = Vector3(1, 0, 0)   # wall is to the east (+X)
+			4: wall_dir = Vector3(-1, 0, 0)  # wall is to the west (-X)
+		# Bottom vertices shift toward the wall so the base touches it.
+		# Top vertices shift away so the flame leans outward.
+		a += wall_dir * 0.4
+		b += wall_dir * 0.4
+		c -= wall_dir * 0.25
+		d -= wall_dir * 0.25
 	# Two triangles: (a, b, c) and (a, c, d). Winding arbitrary since the
 	# shader uses cull_disabled and plants look correct from both sides.
 	var verts := [a, b, c, a, c, d]
@@ -676,9 +693,38 @@ func _write_plant_quad(slot_start: int, bx: int, by: int, bz: int, block_type: i
 		_colors[vi] = Color(1, 1, 1, 1)
 
 
+## Auto-detect torch orientation from surrounding blocks. If there's a solid
+## block directly below → upright (0). Otherwise scan N/S/E/W for a solid
+## neighbor and return the facing that leans toward it. Falls back to upright.
+func _detect_torch_facing(lx: int, ly: int, lz: int) -> int:
+	# Check below — uses get_voxel which handles cross-chunk lookups.
+	if _is_solid_for_torch(get_voxel(lx, ly - 1, lz)):
+		return 0  # ground below, stand upright
+	# No ground — lean toward the first solid horizontal neighbor.
+	if _is_solid_for_torch(get_voxel(lx, ly, lz + 1)):
+		return 1  # solid to south (+Z)
+	if _is_solid_for_torch(get_voxel(lx, ly, lz - 1)):
+		return 2  # solid to north (-Z)
+	if _is_solid_for_torch(get_voxel(lx + 1, ly, lz)):
+		return 3  # solid to east (+X)
+	if _is_solid_for_torch(get_voxel(lx - 1, ly, lz)):
+		return 4  # solid to west (-X)
+	return 0  # nothing nearby, stand upright
+
+
+static func _is_solid_for_torch(b: int) -> bool:
+	if b == Block.AIR or b == Block.WATER or b == Block.LAVA:
+		return false
+	if b == Block.FIRE or b == Block.POPPY or b == Block.DANDELION or b == Block.TORCH:
+		return false
+	if b == Block.GLASS or b == Block.BARRIER:
+		return false
+	return b > 0
+
+
 ## True if `b` should render as a crossed-quad plant mesh instead of a cube.
 static func _is_plant(b: int) -> bool:
-	return b == Block.FIRE or b == Block.POPPY or b == Block.DANDELION
+	return b == Block.FIRE or b == Block.POPPY or b == Block.DANDELION or b == Block.TORCH
 
 
 func _write_face(slot_start: int, bx: int, by: int, bz: int, face_dir: int, block_type: int, ao: PackedFloat32Array, water_corners: PackedFloat32Array = PackedFloat32Array(), connect_mask: int = 0) -> void:
@@ -739,12 +785,15 @@ func _rebuild_block_faces(x: int, y: int, z: int) -> void:
 	if block == Block.AIR:
 		return
 
-	# Plant mesh (fire, flowers): two crossed quads instead of a cube.
+	# Plant mesh (fire, flowers, torches): two crossed quads.
 	if _is_plant(block):
+		var torch_facing: int = 0
+		if block == Block.TORCH:
+			torch_facing = _detect_torch_facing(x, y, z)
 		var plant_slots := PackedInt32Array()
 		for q: int in 2:
 			var ps: int = _alloc_slot()
-			_write_plant_quad(ps, x, y, z, block, q)
+			_write_plant_quad(ps, x, y, z, block, q, torch_facing)
 			plant_slots.append(ps)
 		_has_noncollidable_faces = true
 		if plant_slots.size() > 0:
@@ -866,13 +915,14 @@ func build_mesh_data(mat: Material = null, water_mat: Material = null) -> void:
 				if block == Block.AIR:
 					continue
 
-				# Plants (fire, flowers) render as two crossed quads regardless
-				# of neighbors — no face culling, no directional faces.
 				if _is_plant(block):
+					var tf: int = 0
+					if block == Block.TORCH:
+						tf = _detect_torch_facing(x, y, z)
 					var plant_slots := PackedInt32Array()
 					for q: int in 2:
 						var ps: int = _alloc_slot()
-						_write_plant_quad(ps, x, y, z, block, q)
+						_write_plant_quad(ps, x, y, z, block, q, tf)
 						plant_slots.append(ps)
 					_has_noncollidable_faces = true
 					_block_slots[Vector3i(x, y, z)] = plant_slots
@@ -1124,7 +1174,7 @@ func _apply_mesh() -> void:
 			var k: int = 0
 			while k < s_count:
 				var tid: float = solid_uv2s[k].x
-				if tid != 44.0 and tid != 45.0 and tid != 48.0 and tid != 49.0:
+				if tid != 44.0 and tid != 45.0 and tid != 48.0 and tid != 49.0 and tid != 50.0:
 					for jj: int in 6:
 						col_verts[cc + jj] = solid_verts[k + jj]
 					cc += 6

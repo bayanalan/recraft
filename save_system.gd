@@ -5,7 +5,8 @@ const MAGIC: String = "RCFT"
 # v2 adds world seed after player_pos.
 # v3 adds terrain_type (int32) after seed so the loader can take the
 # flatgrass shared-mesh fast path without guessing from voxels.
-const VERSION: int = 3
+# v4 adds a JSON game_state blob after voxels (day_time, gamerules).
+const VERSION: int = 4
 
 # Default terrain type when loading pre-v3 saves (before this field existed).
 const LEGACY_TERRAIN_TYPE: int = 1  # World.TerrainType.VANILLA_DEFAULT
@@ -63,7 +64,7 @@ static func read_header(save_name: String) -> Dictionary:
 	}
 
 
-static func save_world(save_name: String, world_size: int, voxels: PackedByteArray, player_pos: Vector3, world_seed: int = 0, terrain_type: int = LEGACY_TERRAIN_TYPE) -> bool:
+static func save_world(save_name: String, world_size: int, voxels: PackedByteArray, player_pos: Vector3, world_seed: int = 0, terrain_type: int = LEGACY_TERRAIN_TYPE, game_state: Dictionary = {}) -> bool:
 	ensure_dir()
 	var path: String = SAVE_DIR + save_name + ".save"
 	var f: FileAccess = FileAccess.open(path, FileAccess.WRITE)
@@ -79,6 +80,10 @@ static func save_world(save_name: String, world_size: int, voxels: PackedByteArr
 	f.store_64(world_seed)
 	f.store_32(terrain_type)
 	f.store_buffer(voxels)
+	# v4: JSON game state blob (day_time, gamerules, etc.)
+	var json: String = JSON.stringify(game_state)
+	f.store_32(json.length())
+	f.store_buffer(json.to_utf8_buffer())
 	f.close()
 	return true
 
@@ -108,6 +113,15 @@ static func load_world(save_name: String) -> Dictionary:
 		terrain_type = f.get_32()
 	var expected: int = size * size * size
 	var voxels: PackedByteArray = f.get_buffer(expected)
+	var game_state: Dictionary = {}
+	if version >= 4:
+		var json_len: int = f.get_32()
+		if json_len > 0:
+			var json_buf: PackedByteArray = f.get_buffer(json_len)
+			var json_str: String = json_buf.get_string_from_utf8()
+			var parsed: Variant = JSON.parse_string(json_str)
+			if parsed is Dictionary:
+				game_state = parsed
 	f.close()
 	return {
 		"name": save_name,
@@ -118,6 +132,7 @@ static func load_world(save_name: String) -> Dictionary:
 		"seed": seed,
 		"terrain_type": terrain_type,
 		"voxels": voxels,
+		"game_state": game_state,
 	}
 
 

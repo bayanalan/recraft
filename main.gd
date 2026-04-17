@@ -14,8 +14,12 @@ var _last_show_barriers: bool = false
 # --- Day/night cycle ---
 # _day_time goes from 0.0 to 1.0 continuously. 0.0 = dawn, 0.25 = noon,
 # 0.5 = dusk, 0.75 = midnight. Full cycle = 30 real minutes.
-const DAY_CYCLE_SECONDS: float = 30.0 * 60.0  # 1800s = 30 min
+const DAY_CYCLE_BASE_SECONDS: float = 30.0 * 60.0  # 1800s at tick rate 20
 var _day_time: float = 0.0   # start at dawn
+# Game rules — toggled via chat commands.
+var do_daylight_cycle: bool = true
+var tick_rate: float = 20.0   # base=20; higher = faster day/night
+var noclip: bool = false
 # Sun/moon visual nodes — created in _ready.
 var _sun_mesh: MeshInstance3D = null
 var _moon_mesh: MeshInstance3D = null
@@ -70,6 +74,12 @@ func _process(delta: float) -> void:
 	if holding != _last_show_barriers:
 		_last_show_barriers = holding
 		world.material.set_shader_parameter("show_barriers", holding)
+	# Noclip — disable player collision so they pass through blocks.
+	if player != null:
+		var want_noclip: bool = noclip
+		if player.collision_layer != (0 if want_noclip else 1):
+			player.collision_layer = 0 if want_noclip else 1
+			player.collision_mask = 0 if want_noclip else 1
 	# Day/night cycle — advance time and push lighting to shaders.
 	_update_day_night(delta)
 
@@ -178,8 +188,11 @@ static func _make_moon_texture() -> ImageTexture:
 func _update_day_night(delta: float) -> void:
 	if not is_instance_valid(player):
 		return
-	# Advance clock — wraps at 1.0.
-	_day_time = fmod(_day_time + delta / DAY_CYCLE_SECONDS, 1.0)
+	# Advance clock — wraps at 1.0. Gated by doDaylightCycle game rule.
+	# tick_rate scales the speed: base 20 = normal, 40 = 2× speed, etc.
+	if do_daylight_cycle:
+		var speed: float = tick_rate / 20.0
+		_day_time = fmod(_day_time + delta * speed / DAY_CYCLE_BASE_SECONDS, 1.0)
 
 	# Sun angle: 0 at dawn (horizon), PI/2 at noon (top), PI at dusk, 2PI back.
 	var angle: float = _day_time * TAU
@@ -208,12 +221,12 @@ func _update_day_night(delta: float) -> void:
 
 	# Ambient: bright warm during day, cold dark at night.
 	var day_ambient := Vector3(0.20, 0.22, 0.28)
-	var night_ambient := Vector3(0.03, 0.04, 0.08)
+	var night_ambient := Vector3(0.08, 0.09, 0.14)
 	var ambient := day_ambient * day_factor + night_ambient * (1.0 - day_factor)
 
-	# Sky light: uniform brightness added to all faces (no directional
-	# shadows). Full day = warm white contribution, night = zero.
-	var day_sky_light := Vector3(0.32, 0.30, 0.26)
+	# Sky light: uniform brightness added to all faces. Boosted so daytime
+	# reads as properly bright (ambient + sky_light ≈ 0.8 total at noon).
+	var day_sky_light := Vector3(0.58, 0.56, 0.50)
 	var sky_light := day_sky_light * day_factor
 
 	# Sky color: blue during day, dark blue at night, orange flash at horizon.
@@ -246,6 +259,43 @@ func _update_day_night(delta: float) -> void:
 	var env_node: WorldEnvironment = get_node_or_null("WorldEnvironment")
 	if env_node != null and env_node.environment != null:
 		env_node.environment.background_color = sky
+
+	# Push nearest block lights to shaders.
+	_push_block_lights()
+
+
+func _push_block_lights() -> void:
+	if world == null or not is_instance_valid(player):
+		return
+	var cam_pos: Vector3 = player.global_position
+	const MAX_LIGHTS: int = 64
+	const MAX_DIST_SQ: float = 256.0  # 16² — don't bother with lights beyond 16 blocks
+	# Collect nearby emitters sorted by distance.
+	var nearby: Array = []  # [dist_sq, Vector3i, level]
+	for pos: Vector3i in world.light_emitters:
+		var wpos := Vector3(pos.x + 0.5, pos.y + 0.5, pos.z + 0.5)
+		var d2: float = cam_pos.distance_squared_to(wpos)
+		# Extend range check to the emitter's max radius (level blocks).
+		var lvl: int = world.light_emitters[pos]
+		var max_r: float = float(lvl) + 16.0  # player can be up to 16 blocks from visible surface
+		if d2 > max_r * max_r:
+			continue
+		nearby.append([d2, pos, lvl])
+	# Sort by distance (closest first) and take up to MAX_LIGHTS.
+	nearby.sort_custom(func(a: Array, b: Array) -> bool: return a[0] < b[0])
+	var count: int = mini(nearby.size(), MAX_LIGHTS)
+	var light_data: Array = []
+	for i: int in count:
+		var pos: Vector3i = nearby[i][1]
+		var lvl: int = nearby[i][2]
+		light_data.append(Plane(float(pos.x) + 0.5, float(pos.y) + 0.5, float(pos.z) + 0.5, float(lvl)))
+	# Pad remainder with zero-range lights so the shader loop is safe.
+	while light_data.size() < MAX_LIGHTS:
+		light_data.append(Plane(0, 0, 0, 0))
+	# Push to both voxel and water shaders.
+	for mat: ShaderMaterial in _get_all_shader_materials():
+		mat.set_shader_parameter("block_light_count", count)
+		mat.set_shader_parameter("block_lights", light_data)
 
 
 func _get_all_shader_materials() -> Array[ShaderMaterial]:
@@ -293,6 +343,7 @@ func _setup_pixel_font() -> void:
 func _wire_pause_menu() -> void:
 	pause_menu.resume_requested.connect(_resume_game)
 	pause_menu.quit_requested.connect(_quit_game)
+	pause_menu.main_menu_requested.connect(_on_main_menu_requested)
 	pause_menu.save_requested.connect(_on_save_requested)
 	pause_menu.load_requested.connect(_on_load_requested)
 	pause_menu.new_world_requested.connect(_on_new_world_requested)
@@ -501,7 +552,44 @@ func _resume_game() -> void:
 
 
 func _quit_game() -> void:
+	_auto_save_state()
 	get_tree().quit()
+
+
+func _on_main_menu_requested() -> void:
+	_auto_save_state()
+	get_tree().paused = false
+	get_tree().change_scene_to_file("res://main_menu.tscn")
+
+
+## Quick-save game state (day_time, gamerules) to the current world's save
+## file. Called automatically on quit and main-menu so the user never loses
+## gamerule changes even without an explicit save. Only writes if a save
+## for this world already exists (never creates a new save silently).
+func _auto_save_state() -> void:
+	var save_name: String = _current_world_name
+	if save_name.is_empty():
+		return
+	# Check the save file exists — don't create a new one silently.
+	var path: String = "user://saves/" + save_name + ".save"
+	if not FileAccess.file_exists(path):
+		return
+	# Re-save the full world with current game state. This reuses the
+	# existing save flow (which collects voxels + writes everything).
+	# Since we're about to leave the scene, run it synchronously.
+	var gs: Dictionary = {
+		"day_time": _day_time,
+		"do_daylight_cycle": do_daylight_cycle,
+		"tick_rate": tick_rate,
+		"noclip": noclip,
+	}
+	# Write just the game state as a sidecar JSON file — much faster than
+	# re-saving the entire voxel data.
+	var state_path: String = "user://saves/" + save_name + ".state"
+	var f: FileAccess = FileAccess.open(state_path, FileAccess.WRITE)
+	if f != null:
+		f.store_string(JSON.stringify(gs))
+		f.close()
 
 
 func _on_save_requested(save_name: String) -> void:
@@ -515,7 +603,13 @@ func _on_save_requested(save_name: String) -> void:
 	await get_tree().process_frame
 	world.generation_progress.connect(_on_generation_progress)
 	var t_start: int = Time.get_ticks_msec()
-	var ok: bool = await world.save_to_file(save_name, player.global_position)
+	var gs: Dictionary = {
+		"day_time": _day_time,
+		"do_daylight_cycle": do_daylight_cycle,
+		"tick_rate": tick_rate,
+		"noclip": noclip,
+	}
+	var ok: bool = await world.save_to_file(save_name, player.global_position, gs)
 	world.generation_progress.disconnect(_on_generation_progress)
 	if ok:
 		print("Saved: ", save_name)
@@ -548,6 +642,28 @@ func _on_load_requested(save_name: String) -> void:
 	var pp: Vector3 = data["player_pos"]
 	player.global_position = pp
 	player.velocity = Vector3.ZERO
+	# Restore game state — prefer the .state sidecar (written on every quit)
+	# over the in-save blob (only written on explicit save). This ensures
+	# gamerule changes that weren't explicitly saved still persist.
+	var gs: Dictionary = {}
+	var state_path: String = "user://saves/" + save_name + ".state"
+	if FileAccess.file_exists(state_path):
+		var sf: FileAccess = FileAccess.open(state_path, FileAccess.READ)
+		if sf != null:
+			var parsed: Variant = JSON.parse_string(sf.get_as_text())
+			sf.close()
+			if parsed is Dictionary:
+				gs = parsed
+	if gs.is_empty():
+		gs = data.get("game_state", {})
+	if gs.has("day_time"):
+		_day_time = float(gs["day_time"])
+	if gs.has("do_daylight_cycle"):
+		do_daylight_cycle = bool(gs["do_daylight_cycle"])
+	if gs.has("tick_rate"):
+		tick_rate = float(gs["tick_rate"])
+	if gs.has("noclip"):
+		noclip = bool(gs["noclip"])
 	_saving = false
 	_resume_game()
 

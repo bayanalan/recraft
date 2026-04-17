@@ -36,6 +36,7 @@ const INVENTORY: Array[int] = [
 	Chunk.Block.SPONGE,
 	Chunk.Block.TNT,
 	Chunk.Block.FIRE,
+	Chunk.Block.TORCH,
 	Chunk.Block.POPPY,
 	Chunk.Block.DANDELION,
 	Chunk.Block.BARRIER,

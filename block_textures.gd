@@ -1,7 +1,7 @@
 class_name BlockTextures
 
 const TILE_SIZE: int = 16
-const TILE_COUNT: int = 50
+const TILE_COUNT: int = 51
 # Atlas layout (left to right):
 # 0  stone            1  cobblestone       2  brick
 # 3  dirt             4  planks            5  log_side
@@ -109,6 +109,7 @@ static func create_atlas() -> ImageTexture:
 	_draw_barrier(img, rng, 47)
 	_draw_poppy(img, rng, 48)
 	_draw_dandelion(img, rng, 49)
+	_draw_torch(img, rng, 50)
 
 	# World saturation lift — applied before mipmaps so downsampled levels
 	# inherit the boosted palette. Adaptive, so stone-gray pixels don't
@@ -879,6 +880,41 @@ static func _draw_dandelion(img: Image, rng: RandomNumberGenerator, t: int) -> v
 	_px(img, t, 7, 2, flower_hl)
 	_px(img, t, 8, 5, flower_sh)
 	_px(img, t, 9, 4, flower_sh)
+
+
+## Torch — brown stick on the bottom half with an orange flame on top.
+## Rendered as a crossed-quad plant in-world (like fire/flowers).
+static func _draw_torch(img: Image, rng: RandomNumberGenerator, t: int) -> void:
+	for y: int in TILE_SIZE:
+		for x: int in TILE_SIZE:
+			_px(img, t, x, y, Color(0, 0, 0, 0))
+	# Stick (2px wide, brown)
+	var stick := Color(0.45, 0.30, 0.15, 1.0)
+	var stick_dk := Color(0.35, 0.22, 0.10, 1.0)
+	for y: int in range(6, 15):
+		_px(img, t, 7, y, stick)
+		_px(img, t, 8, y, stick_dk)
+	# Base nub
+	_px(img, t, 6, 14, stick_dk)
+	_px(img, t, 9, 14, stick_dk)
+	# Flame — bright orange/yellow, 4px wide, top portion
+	var flame_core := Color(1.0, 0.90, 0.30, 1.0)
+	var flame_mid := Color(1.0, 0.60, 0.10, 1.0)
+	var flame_outer := Color(0.90, 0.35, 0.05, 1.0)
+	# Core
+	_px(img, t, 7, 4, flame_core); _px(img, t, 8, 4, flame_core)
+	_px(img, t, 7, 5, flame_core); _px(img, t, 8, 5, flame_core)
+	# Mid
+	_px(img, t, 6, 4, flame_mid); _px(img, t, 9, 4, flame_mid)
+	_px(img, t, 6, 5, flame_mid); _px(img, t, 9, 5, flame_mid)
+	_px(img, t, 7, 3, flame_mid); _px(img, t, 8, 3, flame_mid)
+	_px(img, t, 7, 6, flame_mid); _px(img, t, 8, 6, flame_mid)
+	# Outer glow
+	_px(img, t, 7, 2, flame_outer); _px(img, t, 8, 2, flame_outer)
+	_px(img, t, 6, 3, flame_outer); _px(img, t, 9, 3, flame_outer)
+	_px(img, t, 5, 5, flame_outer); _px(img, t, 10, 5, flame_outer)
+	# Tip
+	_px(img, t, 7, 1, Color(1.0, 0.75, 0.20, 0.8))
 
 
 static func _draw_lava(img: Image, rng: RandomNumberGenerator, t: int) -> void:
