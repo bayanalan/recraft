@@ -8,11 +8,22 @@ extends Node3D
 # True while a save (or load) is in progress. Blocks re-entrant save requests
 # and prevents the pause menu from being dismissed mid-operation.
 var _saving: bool = false
-# The user-chosen name for this world, used as the default save name.
 var _current_world_name: String = "My World"
-# Cached barrier-visibility state so we don't push a shader parameter every
-# frame when the value hasn't changed.
 var _last_show_barriers: bool = false
+
+# --- Day/night cycle ---
+# _day_time goes from 0.0 to 1.0 continuously. 0.0 = dawn, 0.25 = noon,
+# 0.5 = dusk, 0.75 = midnight. Full cycle = 30 real minutes.
+const DAY_CYCLE_SECONDS: float = 30.0 * 60.0  # 1800s = 30 min
+var _day_time: float = 0.0   # start at dawn
+# Sun/moon visual nodes — created in _ready.
+var _sun_mesh: MeshInstance3D = null
+var _moon_mesh: MeshInstance3D = null
+# The orbit radius is purely visual — the light direction is computed from
+# _day_time, not from the mesh position.
+const SKY_ORBIT_RADIUS: float = 200.0
+const SUN_SIZE: float = 30.0
+const MOON_SIZE: float = 22.0
 
 
 func _ready() -> void:
@@ -25,9 +36,7 @@ func _ready() -> void:
 		var bs: Node = hud.get_node("BlockSelect")
 		if bs.has_signal("closed"):
 			bs.closed.connect(_on_block_select_closed)
-	# GameConfig tells us whether the main menu asked for a new world or a
-	# loaded save. If we arrived here without going through the main menu
-	# (e.g. F5 in the editor), fall back to a default 256 world.
+	_setup_day_night()
 	_start_from_config()
 
 
@@ -53,7 +62,7 @@ func _on_window_size_changed() -> void:
 		_apply_gui_scale(pause_menu.gui_scale)
 
 
-func _process(_delta: float) -> void:
+func _process(delta: float) -> void:
 	# Toggle barrier visibility based on what the player is holding.
 	if hud == null or world == null or world.material == null:
 		return
@@ -61,12 +70,207 @@ func _process(_delta: float) -> void:
 	if holding != _last_show_barriers:
 		_last_show_barriers = holding
 		world.material.set_shader_parameter("show_barriers", holding)
+	# Day/night cycle — advance time and push lighting to shaders.
+	_update_day_night(delta)
+
+
+func _setup_day_night() -> void:
+	_sun_mesh = _make_sky_body(SUN_SIZE, _make_sun_texture())
+	add_child(_sun_mesh)
+	_moon_mesh = _make_sky_body(MOON_SIZE, _make_moon_texture())
+	add_child(_moon_mesh)
+
+
+func _make_sky_body(size: float, tex: ImageTexture) -> MeshInstance3D:
+	var mesh := QuadMesh.new()
+	mesh.size = Vector2(size, size)
+	var mat := StandardMaterial3D.new()
+	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	mat.albedo_texture = tex
+	mat.texture_filter = BaseMaterial3D.TEXTURE_FILTER_NEAREST
+	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA_SCISSOR
+	mat.alpha_scissor_threshold = 0.5
+	mat.cull_mode = BaseMaterial3D.CULL_DISABLED
+	mesh.material = mat
+	var mi := MeshInstance3D.new()
+	mi.mesh = mesh
+	mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	return mi
+
+
+## Procedural 16×16 sun texture — bright yellow-white circle with warm
+## corona rays extending to the corners, pixel-art style.
+static func _make_sun_texture() -> ImageTexture:
+	const S: int = 16
+	var img := Image.create(S, S, false, Image.FORMAT_RGBA8)
+	img.fill(Color(0, 0, 0, 0))
+	var center := Vector2(7.5, 7.5)
+	for y: int in S:
+		for x: int in S:
+			var d: float = Vector2(x, y).distance_to(center)
+			if d < 4.5:
+				# Bright core — white center fading to warm yellow
+				var t: float = d / 4.5
+				var r: float = lerpf(1.0, 1.0, t)
+				var g: float = lerpf(1.0, 0.85, t)
+				var b: float = lerpf(0.9, 0.35, t)
+				img.set_pixel(x, y, Color(r, g, b, 1.0))
+			elif d < 6.5:
+				# Orange corona ring
+				img.set_pixel(x, y, Color(1.0, 0.65, 0.15, 1.0))
+	# Ray spokes — 4 cardinal + 4 diagonal, 1px wide
+	for i: int in range(0, 3):
+		var off: int = 5 + i
+		# Cardinal rays (up/down/left/right)
+		img.set_pixel(7, off, Color(1.0, 0.8, 0.2, 1.0))
+		img.set_pixel(8, off, Color(1.0, 0.8, 0.2, 1.0))
+		img.set_pixel(7, S - 1 - off, Color(1.0, 0.8, 0.2, 1.0))
+		img.set_pixel(8, S - 1 - off, Color(1.0, 0.8, 0.2, 1.0))
+		img.set_pixel(off, 7, Color(1.0, 0.8, 0.2, 1.0))
+		img.set_pixel(off, 8, Color(1.0, 0.8, 0.2, 1.0))
+		img.set_pixel(S - 1 - off, 7, Color(1.0, 0.8, 0.2, 1.0))
+		img.set_pixel(S - 1 - off, 8, Color(1.0, 0.8, 0.2, 1.0))
+	# Short diagonal rays
+	for i: int in range(0, 2):
+		var off: int = 5 + i
+		var opp: int = S - 1 - off
+		img.set_pixel(off, off, Color(1.0, 0.7, 0.15, 1.0))
+		img.set_pixel(opp, off, Color(1.0, 0.7, 0.15, 1.0))
+		img.set_pixel(off, opp, Color(1.0, 0.7, 0.15, 1.0))
+		img.set_pixel(opp, opp, Color(1.0, 0.7, 0.15, 1.0))
+	return ImageTexture.create_from_image(img)
+
+
+## Procedural 16×16 moon texture — gray-blue circle with dark crater spots,
+## clearly distinct from the sun.
+static func _make_moon_texture() -> ImageTexture:
+	const S: int = 16
+	var img := Image.create(S, S, false, Image.FORMAT_RGBA8)
+	img.fill(Color(0, 0, 0, 0))
+	var center := Vector2(7.5, 7.5)
+	# Base moon disc
+	for y: int in S:
+		for x: int in S:
+			var d: float = Vector2(x, y).distance_to(center)
+			if d < 6.5:
+				var t: float = d / 6.5
+				var r: float = lerpf(0.85, 0.65, t)
+				var g: float = lerpf(0.88, 0.70, t)
+				var b: float = lerpf(0.95, 0.80, t)
+				img.set_pixel(x, y, Color(r, g, b, 1.0))
+	# Dark craters — a few fixed spots
+	var craters: Array[Vector2i] = [
+		Vector2i(5, 6), Vector2i(6, 6),
+		Vector2i(9, 4), Vector2i(10, 4), Vector2i(9, 5),
+		Vector2i(7, 9), Vector2i(8, 9), Vector2i(8, 10),
+		Vector2i(5, 10),
+		Vector2i(10, 8),
+	]
+	var crater_col := Color(0.55, 0.58, 0.65, 1.0)
+	for c: Vector2i in craters:
+		if c.x >= 0 and c.x < S and c.y >= 0 and c.y < S:
+			var d: float = Vector2(c.x, c.y).distance_to(center)
+			if d < 6.0:
+				img.set_pixel(c.x, c.y, crater_col)
+	return ImageTexture.create_from_image(img)
+
+
+func _update_day_night(delta: float) -> void:
+	if not is_instance_valid(player):
+		return
+	# Advance clock — wraps at 1.0.
+	_day_time = fmod(_day_time + delta / DAY_CYCLE_SECONDS, 1.0)
+
+	# Sun angle: 0 at dawn (horizon), PI/2 at noon (top), PI at dusk, 2PI back.
+	# Sun orbits in the XY plane with the player at the center.
+	var angle: float = _day_time * TAU
+	var sun_dir := Vector3(cos(angle), -sin(angle), 0.3).normalized()
+
+	# Position sun/moon in the sky relative to the player. They orbit in a
+	# circle so they look like fixed celestial objects — not billboards.
+	# look_at orients the quad face toward the player each frame.
+	var cam_pos: Vector3 = player.global_position
+	var sun_offset := Vector3(-cos(angle), sin(angle), -0.3).normalized() * SKY_ORBIT_RADIUS
+	var moon_offset := Vector3(cos(angle), -sin(angle), -0.3).normalized() * SKY_ORBIT_RADIUS
+	if _sun_mesh != null:
+		_sun_mesh.global_position = cam_pos + sun_offset
+		_sun_mesh.look_at(cam_pos, Vector3.UP)
+		_sun_mesh.visible = sin(angle) > -0.15
+	if _moon_mesh != null:
+		_moon_mesh.global_position = cam_pos + moon_offset
+		_moon_mesh.look_at(cam_pos, Vector3.UP)
+		_moon_mesh.visible = sin(angle) < 0.15
+
+	# Lighting interpolation based on sun altitude.
+	# sun_alt: 1.0 at noon, 0.0 at horizon, negative at night.
+	var sun_alt: float = sin(angle)
+	# day_factor: 1.0 during full day, 0.0 at night, smooth transition at
+	# dawn/dusk over a ~10% band of the cycle.
+	var day_factor: float = smoothstep(-0.15, 0.2, sun_alt)
+
+	# Ambient: bright warm during day, cold dark at night.
+	var day_ambient := Vector3(0.20, 0.22, 0.28)
+	var night_ambient := Vector3(0.03, 0.04, 0.08)
+	var ambient := day_ambient * day_factor + night_ambient * (1.0 - day_factor)
+
+	# Sun color: warm white at full day, orange at horizon, zero at night.
+	var sun_col: Vector3
+	if sun_alt > 0.1:
+		sun_col = Vector3(1.0, 0.95, 0.85) * day_factor
+	elif sun_alt > -0.1:
+		# Sunrise/sunset — warm orange glow.
+		var horizon_t: float = (sun_alt + 0.1) / 0.2
+		sun_col = Vector3(1.0, 0.5, 0.2) * horizon_t
+	else:
+		sun_col = Vector3.ZERO
+
+	# Sky color: blue during day, dark blue at night, orange flash at horizon.
+	var day_sky := Color(0.53, 0.76, 0.98)
+	var night_sky := Color(0.02, 0.02, 0.06)
+	var sunset_sky := Color(0.85, 0.45, 0.20)
+	var sky: Color
+	if sun_alt > 0.15:
+		sky = day_sky
+	elif sun_alt > -0.05:
+		var t: float = (sun_alt + 0.05) / 0.20
+		sky = night_sky.lerp(sunset_sky, t) if t < 0.5 else sunset_sky.lerp(day_sky, (t - 0.5) * 2.0)
+	else:
+		sky = night_sky
+
+	# Push to all three shaders.
+	var sun_dir_v3 := Vector3(sun_dir.x, sun_dir.y, sun_dir.z)
+	var ambient_col := Color(ambient.x, ambient.y, ambient.z)
+	var sun_color := Color(sun_col.x, sun_col.y, sun_col.z)
+	var fog_col := sky
+	for mat: ShaderMaterial in _get_all_shader_materials():
+		mat.set_shader_parameter("sun_direction", sun_dir_v3)
+		mat.set_shader_parameter("sun_color", sun_color)
+		mat.set_shader_parameter("ambient_light", ambient_col)
+	# Fog color matches sky so the horizon blends correctly at any time of day.
+	if world.material != null:
+		world.material.set_shader_parameter("fog_color", fog_col)
+	if world.water_material != null:
+		world.water_material.set_shader_parameter("fog_color", fog_col)
+
+	# Update the WorldEnvironment background to match.
+	var env_node: WorldEnvironment = get_node_or_null("WorldEnvironment")
+	if env_node != null and env_node.environment != null:
+		env_node.environment.background_color = sky
+
+
+func _get_all_shader_materials() -> Array[ShaderMaterial]:
+	var mats: Array[ShaderMaterial] = []
+	if world != null and world.material != null:
+		mats.append(world.material)
+	if world != null and world.water_material != null:
+		mats.append(world.water_material)
+	var ps: ParticleSystem = get_node_or_null("ParticleSystem") as ParticleSystem
+	if ps != null and ps._mesh_material != null:
+		mats.append(ps._mesh_material)
+	return mats
 
 
 func _on_block_select_closed() -> void:
-	# Swallow whatever LMB/RMB state is held at the moment the inventory
-	# closes — otherwise the very click that picked a block will also count
-	# as a break/place in the first gameplay frame.
 	if player != null:
 		player._capture_cooldown = 0.25
 
@@ -129,12 +333,10 @@ func _wire_pause_menu() -> void:
 
 func _on_view_distance_changed(distance: int) -> void:
 	var dist_f: float = float(distance)
-	# Camera.far is extended slightly past the nominal view distance so the
-	# shader's distance fog can reach full opacity (sky-color) BEFORE a face
-	# gets frustum-clipped. Otherwise the user sees a sharp clip edge even
-	# though the fog would have covered it a few meters further out.
+	# Camera.far must extend past both the fog fade-out AND the sky orbit
+	# so the sun/moon aren't frustum-clipped.
 	if player != null and player.camera != null:
-		player.camera.far = dist_f + 16.0
+		player.camera.far = maxf(dist_f + 16.0, SKY_ORBIT_RADIUS + 20.0)
 	# Voxel + water shaders need to know the render distance so they can ease
 	# fragments toward fog_color over the outer ~25% of the radius (matches
 	# the shader's smoothstep band). Pass the nominal distance, not the

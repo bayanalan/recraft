@@ -21,11 +21,10 @@ uniform float view_distance = 256.0;
 // background_color in main.tscn so fogged faces read as "sky behind the world".
 uniform vec3 fog_color : source_color = vec3(0.53, 0.76, 0.98);
 
-const vec3 SUN_DIR = vec3(-0.36, -0.8, 0.48);
-const vec3 SUN_COLOR = vec3(1.0, 0.95, 0.85);
-// Lowered ambient + sun contribution so a placed block reads the same
-// darkness as its 2D inventory preview (which uses only face tints).
-const vec3 AMBIENT = vec3(0.20, 0.22, 0.28);
+// Day/night cycle — driven by main.gd each frame.
+uniform vec3 sun_direction = vec3(-0.36, -0.8, 0.48);
+uniform vec3 sun_color = vec3(1.0, 0.95, 0.85);
+uniform vec3 ambient_light = vec3(0.20, 0.22, 0.28);
 const float ATLAS_TILES = 50.0;
 const float GLASS_TILE = 8.0;
 const float BARRIER_TILE = 47.0;
@@ -85,8 +84,8 @@ void fragment() {
 	// Fake directional lighting — contribution reduced from 0.45 to 0.32 so
 	// the peak brightness of a sunlit top face stays close to the inventory
 	// icon's 1.0 tint without tonemap lifting it past that.
-	float ndotl = max(dot(n, -normalize(SUN_DIR)), 0.0);
-	vec3 light = AMBIENT + SUN_COLOR * ndotl * 0.32;
+	float ndotl = max(dot(n, -normalize(sun_direction)), 0.0);
+	vec3 light = ambient_light + sun_color * ndotl * 0.32;
 
 	// Face-based shading
 	float face_shade = 0.72 + 0.28 * an.y + 0.08 * an.x;

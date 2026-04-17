@@ -7,9 +7,10 @@ render_mode unshaded, cull_disabled, blend_mix, depth_draw_opaque;
 // pixelated to match the rest of the game's textures. NOT animated — the
 // flow is indicated by still streaks in the pattern itself.
 
-const vec3 SUN_DIR = vec3(-0.36, -0.8, 0.48);
-const vec3 SUN_COLOR = vec3(1.0, 0.95, 0.85);
-const vec3 AMBIENT = vec3(0.20, 0.22, 0.28);
+// Day/night cycle — driven by main.gd each frame.
+uniform vec3 sun_direction = vec3(-0.36, -0.8, 0.48);
+uniform vec3 sun_color = vec3(1.0, 0.95, 0.85);
+uniform vec3 ambient_light = vec3(0.20, 0.22, 0.28);
 const float PIXELS_PER_UNIT = 16.0;  // matches the 16-texel block resolution
 // Same distance-fog uniforms as voxel.gdshader so water blocks fade with the
 // terrain instead of staying vivid past the render distance.
@@ -60,8 +61,8 @@ void fragment() {
 	vec3 tex_color = mix(deep, light_c, shimmer);
 
 	// Same lighting / fog pipeline as voxel.gdshader so water fits in.
-	float ndotl = max(dot(n, -normalize(SUN_DIR)), 0.0);
-	vec3 light = AMBIENT + SUN_COLOR * ndotl * 0.32;
+	float ndotl = max(dot(n, -normalize(sun_direction)), 0.0);
+	vec3 light = ambient_light + sun_color * ndotl * 0.32;
 	float face_shade = 0.72 + 0.28 * an.y + 0.08 * an.x;
 	float ao = COLOR.a;
 	ao = ao * ao;
