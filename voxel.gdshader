@@ -21,9 +21,9 @@ uniform float view_distance = 256.0;
 // background_color in main.tscn so fogged faces read as "sky behind the world".
 uniform vec3 fog_color : source_color = vec3(0.53, 0.76, 0.98);
 
-// Day/night cycle — driven by main.gd each frame.
-uniform vec3 sun_direction = vec3(-0.36, -0.8, 0.48);
-uniform vec3 sun_color = vec3(1.0, 0.95, 0.85);
+// Day/night cycle — driven by main.gd each frame. Minecraft-style: no
+// directional sun shadows, just uniform sky brightness that dims at night.
+uniform vec3 sky_light = vec3(0.32, 0.30, 0.26);
 uniform vec3 ambient_light = vec3(0.20, 0.22, 0.28);
 const float ATLAS_TILES = 50.0;
 const float GLASS_TILE = 8.0;
@@ -81,11 +81,10 @@ void fragment() {
 	}
 	vec3 tex_color = tex_sample.rgb;
 
-	// Fake directional lighting — contribution reduced from 0.45 to 0.32 so
-	// the peak brightness of a sunlit top face stays close to the inventory
-	// icon's 1.0 tint without tonemap lifting it past that.
-	float ndotl = max(dot(n, -normalize(sun_direction)), 0.0);
-	vec3 light = ambient_light + sun_color * ndotl * 0.32;
+	// Minecraft-style uniform sky light — no directional shadows. All faces
+	// get the same sky brightness; face_shade below handles the top-vs-side
+	// shading that gives blocks their 3D read.
+	vec3 light = ambient_light + sky_light;
 
 	// Face-based shading
 	float face_shade = 0.72 + 0.28 * an.y + 0.08 * an.x;

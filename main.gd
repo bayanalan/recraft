@@ -182,9 +182,7 @@ func _update_day_night(delta: float) -> void:
 	_day_time = fmod(_day_time + delta / DAY_CYCLE_SECONDS, 1.0)
 
 	# Sun angle: 0 at dawn (horizon), PI/2 at noon (top), PI at dusk, 2PI back.
-	# Sun orbits in the XY plane with the player at the center.
 	var angle: float = _day_time * TAU
-	var sun_dir := Vector3(cos(angle), -sin(angle), 0.3).normalized()
 
 	# Position sun/moon in the sky relative to the player. They orbit in a
 	# circle so they look like fixed celestial objects — not billboards.
@@ -213,16 +211,10 @@ func _update_day_night(delta: float) -> void:
 	var night_ambient := Vector3(0.03, 0.04, 0.08)
 	var ambient := day_ambient * day_factor + night_ambient * (1.0 - day_factor)
 
-	# Sun color: warm white at full day, orange at horizon, zero at night.
-	var sun_col: Vector3
-	if sun_alt > 0.1:
-		sun_col = Vector3(1.0, 0.95, 0.85) * day_factor
-	elif sun_alt > -0.1:
-		# Sunrise/sunset — warm orange glow.
-		var horizon_t: float = (sun_alt + 0.1) / 0.2
-		sun_col = Vector3(1.0, 0.5, 0.2) * horizon_t
-	else:
-		sun_col = Vector3.ZERO
+	# Sky light: uniform brightness added to all faces (no directional
+	# shadows). Full day = warm white contribution, night = zero.
+	var day_sky_light := Vector3(0.32, 0.30, 0.26)
+	var sky_light := day_sky_light * day_factor
 
 	# Sky color: blue during day, dark blue at night, orange flash at horizon.
 	var day_sky := Color(0.53, 0.76, 0.98)
@@ -237,14 +229,12 @@ func _update_day_night(delta: float) -> void:
 	else:
 		sky = night_sky
 
-	# Push to all three shaders.
-	var sun_dir_v3 := Vector3(sun_dir.x, sun_dir.y, sun_dir.z)
+	# Push to all three shaders — just two uniforms now (no direction).
 	var ambient_col := Color(ambient.x, ambient.y, ambient.z)
-	var sun_color := Color(sun_col.x, sun_col.y, sun_col.z)
+	var sky_light_col := Color(sky_light.x, sky_light.y, sky_light.z)
 	var fog_col := sky
 	for mat: ShaderMaterial in _get_all_shader_materials():
-		mat.set_shader_parameter("sun_direction", sun_dir_v3)
-		mat.set_shader_parameter("sun_color", sun_color)
+		mat.set_shader_parameter("sky_light", sky_light_col)
 		mat.set_shader_parameter("ambient_light", ambient_col)
 	# Fog color matches sky so the horizon blends correctly at any time of day.
 	if world.material != null:

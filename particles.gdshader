@@ -9,8 +9,7 @@ render_mode unshaded, cull_back, depth_draw_opaque;
 uniform sampler2D block_atlas : filter_nearest_mipmap, repeat_enable;
 const float ATLAS_TILES = 50.0;
 
-uniform vec3 sun_direction = vec3(-0.36, -0.8, 0.48);
-uniform vec3 sun_color = vec3(1.0, 0.95, 0.85);
+uniform vec3 sky_light = vec3(0.32, 0.30, 0.26);
 uniform vec3 ambient_light = vec3(0.28, 0.31, 0.38);
 
 varying flat float v_tile;
@@ -36,8 +35,7 @@ void fragment() {
 
 	// Fake directional lighting (matches voxel.gdshader)
 	vec3 n = normalize(world_normal);
-	float ndotl = max(dot(n, -normalize(sun_direction)), 0.0);
-	vec3 light = ambient_light + sun_color * ndotl * 0.45;
+	vec3 light = ambient_light + sky_light;
 
 	// Face-based shading
 	vec3 an = abs(n);
