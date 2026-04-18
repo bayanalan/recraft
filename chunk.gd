@@ -78,6 +78,9 @@ enum Block {
 	BROWN_MUSHROOM = 60,
 	CRIMSON_FUNGUS = 61,
 	WARPED_FUNGUS = 62,
+	# Refined gemstone block — polished cyan diamond, matches the iron/gold
+	# family. Its atlas tile sits at the end of the atlas (69).
+	DIAMOND_BLOCK = 63,
 }
 
 # Face direction constants
@@ -443,6 +446,7 @@ static func _tile_index(block_type: int, face_dir: int) -> float:
 		Block.BROWN_MUSHROOM: return 66.0
 		Block.CRIMSON_FUNGUS: return 67.0
 		Block.WARPED_FUNGUS: return 68.0
+		Block.DIAMOND_BLOCK: return 69.0
 		Block.WORLD_BEDROCK: return 13.0  # same texture as BEDROCK
 		Block.WATER: return 32.0
 	return 0.0

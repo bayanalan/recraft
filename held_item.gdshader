@@ -10,7 +10,7 @@ render_mode unshaded, cull_disabled, depth_draw_opaque;
 // what they're holding even at midnight.
 
 uniform sampler2D block_atlas : filter_nearest, repeat_disable;
-const float ATLAS_TILES = 69.0;
+const float ATLAS_TILES = 70.0;
 
 // Driven by main.gd's day/night loop (same uniforms as voxel.gdshader), so
 // the block in hand dims with the world at dusk and gets a reddish ambient

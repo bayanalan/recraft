@@ -682,6 +682,43 @@ func _explode(center: Vector3i, radius: float) -> void:
 		if lz == 0:  _mark_chunk(affected_chunks, cp.x, cp.y, cp.z - 1)
 		if lz == 15: _mark_chunk(affected_chunks, cp.x, cp.y, cp.z + 1)
 
+	# Phase 2b: wake up any fluid neighbors of destroyed cells. Same pass
+	# break_block does — without this, a TNT crater that opens up next to
+	# an ocean leaves the adjacent water cells sitting frozen at their
+	# pre-blast level, because nothing ever added them to _water_pending /
+	# _lava_pending to re-simulate. Neighbors are checked in all 6
+	# directions; we only add cells that are actually flowing (level < 8)
+	# so source blocks in the middle of a lake don't loop forever.
+	const _EXPLODE_NEIGHBORS: Array[Vector3i] = [
+		Vector3i(1, 0, 0), Vector3i(-1, 0, 0),
+		Vector3i(0, 1, 0), Vector3i(0, -1, 0),
+		Vector3i(0, 0, 1), Vector3i(0, 0, -1),
+	]
+	for p: Vector3i in destroyed:
+		for off: Vector3i in _EXPLODE_NEIGHBORS:
+			var np: Vector3i = p + off
+			if np.x < 0 or np.y < 0 or np.z < 0:
+				continue
+			if np.x >= size or np.y >= size or np.z >= size:
+				continue
+			var nb: int = get_voxel(np.x, np.y, np.z)
+			if nb != Chunk.Block.WATER and nb != Chunk.Block.LAVA:
+				continue
+			var n_lvl: int = get_water_level_at(np.x, np.y, np.z)
+			if n_lvl <= 0:
+				n_lvl = 1
+			if n_lvl >= 8:
+				# Source block — but it still needs to flow into the new
+				# cavity, so enqueue anyway. Sources are cheap to re-tick
+				# because _tick_fluid short-circuits when nothing changes.
+				pass
+			if nb == Chunk.Block.WATER:
+				if not _water_pending.has(np):
+					_water_pending.append(np)
+			else:
+				if not _lava_pending.has(np):
+					_lava_pending.append(np)
+
 	# Phase 3: queue affected chunks for deferred rebuild — spread across
 	# frames so the explosion doesn't freeze the game while 20+ chunks
 	# re-mesh simultaneously. _process_explosion_queue drains a few per frame.

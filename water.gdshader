@@ -40,25 +40,58 @@ void fragment() {
 		wuv = vec2(world_pos.x, world_pos.y);
 	}
 
-	// Quantize to pixel grid so the pattern is chunky/pixelated.
-	vec2 pixel_uv = floor(wuv * PIXELS_PER_UNIT) / PIXELS_PER_UNIT;
+	// Integer pixel coordinates in world space. Because the same `wuv`
+	// projection is used on every face, adjacent water blocks share the
+	// same grid — the pixel pattern tiles seamlessly across surfaces.
+	vec2 ipx = floor(wuv * PIXELS_PER_UNIT);
 
-	// STILL (non-animated) flow streaks. Horizontal bands suggest water
-	// flowing toward +X without actually moving.
-	float streak = sin(pixel_uv.y * 18.0) * 0.5 + 0.5;
-	// Snap streak intensity to 3 discrete shades so you see distinct lines.
-	streak = floor(streak * 3.0) / 3.0;
+	// Wavy band selector — two low-freq sines on Y produce irregular
+	// horizontal bands. Each pixel picks one of 4 discrete shades based on
+	// its band position (chunky pixel-art look, not a smooth gradient).
+	float wave1 = sin(ipx.y * 1.1) * 0.5 + 0.5;
+	float wave2 = sin(ipx.y * 0.37 + 1.2) * 0.5 + 0.5;
+	float base_f = wave1 * 0.65 + wave2 * 0.35;
+	int base_idx = int(clamp(floor(base_f * 4.0), 0.0, 3.0));
 
-	// Break up the uniform streaks with a second low-frequency pattern so
-	// it doesn't look like stripes — gives mottled "flowing" variation.
-	float mottle = sin(pixel_uv.x * 6.0 + pixel_uv.y * 2.0) * 0.5 + 0.5;
-	mottle = floor(mottle * 4.0) / 4.0;
+	// Deterministic per-pixel hash — bumps ~18% of pixels one shade down
+	// and ~18% one shade up, so the bands aren't razor-straight and the
+	// surface reads as hand-placed pixel art.
+	float hash = fract(sin(dot(ipx, vec2(127.1, 311.7))) * 43758.5453);
+	int idx = base_idx;
+	if (hash < 0.18 && idx > 0) idx -= 1;
+	else if (hash > 0.82 && idx < 3) idx += 1;
 
-	float shimmer = streak * 0.6 + mottle * 0.4;
+	// Four discrete blues — matches the inventory water tile so the block
+	// you place looks identical to the one shown in the hotbar/inventory.
+	vec3 shade0 = vec3(0.08, 0.22, 0.54);
+	vec3 shade1 = vec3(0.14, 0.32, 0.68);
+	vec3 shade2 = vec3(0.22, 0.46, 0.84);
+	vec3 shade3 = vec3(0.38, 0.62, 0.96);
+	vec3 tex_color;
+	if (idx == 0) tex_color = shade0;
+	else if (idx == 1) tex_color = shade1;
+	else if (idx == 2) tex_color = shade2;
+	else tex_color = shade3;
 
-	vec3 deep = vec3(0.10, 0.24, 0.58);
-	vec3 light_c = vec3(0.36, 0.58, 0.95);
-	vec3 tex_color = mix(deep, light_c, shimmer);
+	// Ripple crests — rows 3/9/13 within each 16-pixel band get every
+	// other column boosted to the brightest shade, giving the surface
+	// visible "wave lines" that repeat every block length.
+	float row_in_tile = mod(ipx.y, 16.0);
+	float col_mod2 = mod(ipx.x, 2.0);
+	bool is_crest_row = (abs(row_in_tile - 3.0) < 0.5
+			|| abs(row_in_tile - 9.0) < 0.5
+			|| abs(row_in_tile - 13.0) < 0.5);
+	if (is_crest_row && col_mod2 < 0.5) {
+		tex_color = shade3;
+	}
+
+	// Glint pinpoints — rare very-bright cyan pixels that catch the eye
+	// like sunlight on a ripple. Second hash so glints don't correlate
+	// with the shade-jitter pattern.
+	float hash2 = fract(sin(dot(ipx, vec2(269.5, 183.3))) * 39483.2394);
+	if (hash2 > 0.975) {
+		tex_color = vec3(0.80, 0.94, 1.00);
+	}
 
 	// Same lighting / fog pipeline as voxel.gdshader so water fits in.
 	vec3 light = ambient_light + sky_light;

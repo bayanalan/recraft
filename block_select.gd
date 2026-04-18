@@ -34,7 +34,7 @@ const ALL_BLOCKS: Array[int] = [
 	Chunk.Block.RED_MUSHROOM, Chunk.Block.BROWN_MUSHROOM,
 	Chunk.Block.CRIMSON_FUNGUS, Chunk.Block.WARPED_FUNGUS,
 	Chunk.Block.POPPY, Chunk.Block.DANDELION, Chunk.Block.BARRIER,
-	Chunk.Block.IRON_BLOCK, Chunk.Block.GOLD_BLOCK,
+	Chunk.Block.IRON_BLOCK, Chunk.Block.GOLD_BLOCK, Chunk.Block.DIAMOND_BLOCK,
 	Chunk.Block.COAL_ORE, Chunk.Block.IRON_ORE, Chunk.Block.GOLD_ORE, Chunk.Block.DIAMOND_ORE,
 	Chunk.Block.WOOL_WHITE, Chunk.Block.WOOL_ORANGE, Chunk.Block.WOOL_MAGENTA,
 	Chunk.Block.WOOL_LIGHT_BLUE, Chunk.Block.WOOL_YELLOW, Chunk.Block.WOOL_LIME,
@@ -49,7 +49,8 @@ const MINERALS: Array[int] = [
 	Chunk.Block.STONE, Chunk.Block.COBBLESTONE, Chunk.Block.SMOOTH_STONE,
 	Chunk.Block.SMOOTH_STONE_SLAB, Chunk.Block.BRICK, Chunk.Block.MOSSY_COBBLESTONE,
 	Chunk.Block.OBSIDIAN, Chunk.Block.BEDROCK, Chunk.Block.BARRIER,
-	Chunk.Block.IRON_BLOCK, Chunk.Block.GOLD_BLOCK, Chunk.Block.GLASS,
+	Chunk.Block.IRON_BLOCK, Chunk.Block.GOLD_BLOCK, Chunk.Block.DIAMOND_BLOCK,
+	Chunk.Block.GLASS,
 ]
 
 # Ores tab — overworld + nether ores.

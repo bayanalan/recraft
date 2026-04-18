@@ -855,6 +855,17 @@ func _save_dimension_cache(save_name: String) -> void:
 
 
 func _load_dimension_cache(save_name: String) -> void:
+	# Both sidecars have to be read — the .save file only contains voxels
+	# for the dimension the player was IN at save time, and the cached
+	# other-dimension voxels live in the matching sidecar.
+	# Previously only .nether was loaded: so if a player quit while in the
+	# nether (e.g. after the portal auto-save), _overworld_voxels stayed
+	# empty, and the return portal couldn't restore the overworld — the
+	# world stayed on the nether voxels the .save file had loaded, and
+	# the next auto-save overwrote .save with those "nether-as-overworld"
+	# voxels, permanently corrupting the world. Loading both sidecars
+	# makes the cache symmetric so the return portal has the right
+	# voxels no matter which side the player saved on.
 	var nether_path: String = "user://saves/" + save_name + ".nether"
 	if FileAccess.file_exists(nether_path):
 		var f: FileAccess = FileAccess.open(nether_path, FileAccess.READ)
@@ -862,6 +873,12 @@ func _load_dimension_cache(save_name: String) -> void:
 			_nether_voxels = f.get_buffer(f.get_length())
 			f.close()
 			_nether_generated = true
+	var ow_path: String = "user://saves/" + save_name + ".overworld"
+	if FileAccess.file_exists(ow_path):
+		var fw: FileAccess = FileAccess.open(ow_path, FileAccess.READ)
+		if fw != null:
+			_overworld_voxels = fw.get_buffer(fw.get_length())
+			fw.close()
 
 
 func _auto_save_state() -> void:

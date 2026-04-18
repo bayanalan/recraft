@@ -7,7 +7,7 @@ render_mode unshaded, cull_back, depth_draw_opaque;
 // chunk of the source block's texture. Lighting matches voxel.gdshader.
 
 uniform sampler2D block_atlas : filter_nearest_mipmap, repeat_enable;
-const float ATLAS_TILES = 69.0;
+const float ATLAS_TILES = 70.0;
 
 uniform vec3 sky_light = vec3(0.32, 0.30, 0.26);
 uniform vec3 ambient_light = vec3(0.28, 0.31, 0.38);
