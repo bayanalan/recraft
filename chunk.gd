@@ -71,6 +71,13 @@ enum Block {
 	WARPED_STEM = 56,
 	NETHER_WART_BLOCK = 57,
 	WARPED_WART_BLOCK = 58,
+	# Nether mushrooms — X-cross plants like poppy/dandelion. Red and brown
+	# are the classic overworld-style mushrooms adapted to the nether wastes.
+	# Crimson and warped fungi are the forest-biome variants.
+	RED_MUSHROOM = 59,
+	BROWN_MUSHROOM = 60,
+	CRIMSON_FUNGUS = 61,
+	WARPED_FUNGUS = 62,
 }
 
 # Face direction constants
@@ -432,6 +439,10 @@ static func _tile_index(block_type: int, face_dir: int) -> float:
 			return 62.0 if face_dir == DIR_YP or face_dir == DIR_YN else 61.0
 		Block.NETHER_WART_BLOCK: return 63.0
 		Block.WARPED_WART_BLOCK: return 64.0
+		Block.RED_MUSHROOM: return 65.0
+		Block.BROWN_MUSHROOM: return 66.0
+		Block.CRIMSON_FUNGUS: return 67.0
+		Block.WARPED_FUNGUS: return 68.0
 		Block.WORLD_BEDROCK: return 13.0  # same texture as BEDROCK
 		Block.WATER: return 32.0
 	return 0.0
@@ -452,6 +463,9 @@ static func _is_opaque_neighbor(b: int) -> bool:
 	if b == Block.SMOOTH_STONE_SLAB:
 		return false
 	if b == Block.POPPY or b == Block.DANDELION or b == Block.TORCH:
+		return false
+	if b == Block.RED_MUSHROOM or b == Block.BROWN_MUSHROOM \
+			or b == Block.CRIMSON_FUNGUS or b == Block.WARPED_FUNGUS:
 		return false
 	if b == Block.NETHER_PORTAL:
 		return false
@@ -786,6 +800,9 @@ static func _is_solid_for_torch(b: int) -> bool:
 		return false
 	if b == Block.FIRE or b == Block.POPPY or b == Block.DANDELION or b == Block.TORCH:
 		return false
+	if b == Block.RED_MUSHROOM or b == Block.BROWN_MUSHROOM \
+			or b == Block.CRIMSON_FUNGUS or b == Block.WARPED_FUNGUS:
+		return false
 	if b == Block.GLASS or b == Block.BARRIER:
 		return false
 	return b > 0
@@ -793,7 +810,9 @@ static func _is_solid_for_torch(b: int) -> bool:
 
 ## True if `b` should render as a crossed-quad plant mesh instead of a cube.
 static func _is_plant(b: int) -> bool:
-	return b == Block.FIRE or b == Block.POPPY or b == Block.DANDELION or b == Block.TORCH
+	return b == Block.FIRE or b == Block.POPPY or b == Block.DANDELION or b == Block.TORCH \
+		or b == Block.RED_MUSHROOM or b == Block.BROWN_MUSHROOM \
+		or b == Block.CRIMSON_FUNGUS or b == Block.WARPED_FUNGUS
 
 
 func _write_face(slot_start: int, bx: int, by: int, bz: int, face_dir: int, block_type: int, ao: PackedFloat32Array, water_corners: PackedFloat32Array = PackedFloat32Array(), connect_mask: int = 0) -> void:
@@ -1247,9 +1266,12 @@ func _apply_mesh() -> void:
 		if _water_mat != null:
 			_arr_mesh.surface_set_material(_arr_mesh.get_surface_count() - 1, _water_mat)
 
-	# Collision: filter fire (tile 44), lava (tile 45), poppy (48), and
-	# dandelion (49) out of the solid verts so the player walks through them.
-	# Water is already handled (it went to the water surface, not solid_verts).
+	# Collision: filter fire (44), lava (45), poppy (48), dandelion (49),
+	# torch (50), nether portal (54), and the four nether mushrooms
+	# (65=red, 66=brown, 67=crimson fungus, 68=warped fungus) out of the
+	# solid verts so the player walks through them. Water is already handled
+	# (it went to the water surface, not solid_verts). Break-raycasts still
+	# hit these blocks because block_outline uses voxel lookups, not physics.
 	if _physics_ready:
 		var col_verts: PackedVector3Array
 		if _has_noncollidable_faces:
@@ -1259,7 +1281,9 @@ func _apply_mesh() -> void:
 			var k: int = 0
 			while k < s_count:
 				var tid: float = solid_uv2s[k].x
-				if tid != 44.0 and tid != 45.0 and tid != 48.0 and tid != 49.0 and tid != 50.0 and tid != 54.0:
+				if tid != 44.0 and tid != 45.0 and tid != 48.0 and tid != 49.0 \
+						and tid != 50.0 and tid != 54.0 \
+						and tid != 65.0 and tid != 66.0 and tid != 67.0 and tid != 68.0:
 					for jj: int in 6:
 						col_verts[cc + jj] = solid_verts[k + jj]
 					cc += 6

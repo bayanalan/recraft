@@ -31,6 +31,8 @@ const ALL_BLOCKS: Array[int] = [
 	Chunk.Block.CRIMSON_NYLIUM, Chunk.Block.WARPED_NYLIUM,
 	Chunk.Block.CRIMSON_STEM, Chunk.Block.WARPED_STEM,
 	Chunk.Block.NETHER_WART_BLOCK, Chunk.Block.WARPED_WART_BLOCK,
+	Chunk.Block.RED_MUSHROOM, Chunk.Block.BROWN_MUSHROOM,
+	Chunk.Block.CRIMSON_FUNGUS, Chunk.Block.WARPED_FUNGUS,
 	Chunk.Block.POPPY, Chunk.Block.DANDELION, Chunk.Block.BARRIER,
 	Chunk.Block.IRON_BLOCK, Chunk.Block.GOLD_BLOCK,
 	Chunk.Block.COAL_ORE, Chunk.Block.IRON_ORE, Chunk.Block.GOLD_ORE, Chunk.Block.DIAMOND_ORE,
@@ -65,6 +67,8 @@ const NATURAL: Array[int] = [
 	Chunk.Block.CRIMSON_STEM, Chunk.Block.WARPED_STEM,
 	Chunk.Block.NETHER_WART_BLOCK, Chunk.Block.WARPED_WART_BLOCK,
 	Chunk.Block.POPPY, Chunk.Block.DANDELION,
+	Chunk.Block.RED_MUSHROOM, Chunk.Block.BROWN_MUSHROOM,
+	Chunk.Block.CRIMSON_FUNGUS, Chunk.Block.WARPED_FUNGUS,
 	Chunk.Block.TORCH, Chunk.Block.TNT, Chunk.Block.SPONGE, Chunk.Block.BOOKSHELF,
 	# Ores are natural too — they spawn in the world.
 	Chunk.Block.COAL_ORE, Chunk.Block.IRON_ORE, Chunk.Block.GOLD_ORE,

@@ -6,7 +6,11 @@
       "WebFetch(domain:github.com)",
       "WebFetch(domain:docs.godotengine.org)",
       "WebFetch(domain:www.golden-tamarin.com)",
-      "WebFetch(domain:forum.godotengine.org)"
+      "WebFetch(domain:forum.godotengine.org)",
+      "Bash(git ls-tree *)",
+      "Bash(git check-ignore *)",
+      "Bash(git fetch *)",
+      "Bash(git restore *)"
     ]
   }
 }

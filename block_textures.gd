@@ -1,7 +1,7 @@
 class_name BlockTextures
 
 const TILE_SIZE: int = 16
-const TILE_COUNT: int = 65
+const TILE_COUNT: int = 69
 # Atlas layout (left to right):
 # 0  stone            1  cobblestone       2  brick
 # 3  dirt             4  planks            5  log_side
@@ -19,7 +19,13 @@ const TILE_COUNT: int = 65
 # 39 wool_light_gray  40 wool_cyan         41 wool_purple
 # 42 wool_brown       43 wool_black        44 fire
 # 45 lava             46 smooth_stone      47 barrier
-# 48 poppy            49 dandelion
+# 48 poppy            49 dandelion         50 torch
+# 51 netherrack       52 nether_gold_ore   53 nether_quartz_ore
+# 54 nether_portal    55 crimson_nylium_t  56 crimson_nylium_s
+# 57 warped_nylium_t  58 warped_nylium_s   59 crimson_stem_s
+# 60 crimson_stem_t   61 warped_stem_s     62 warped_stem_t
+# 63 nether_wart      64 warped_wart       65 red_mushroom
+# 66 brown_mushroom   67 crimson_fungus    68 warped_fungus
 
 static var _cached: ImageTexture = null
 static var _cached_icon: ImageTexture = null
@@ -124,6 +130,11 @@ static func create_atlas() -> ImageTexture:
 	_draw_stem_top(img, rng, 62, Color(0.30, 0.62, 0.68), Color(0.18, 0.48, 0.55))
 	_draw_wart_block(img, rng, 63, Color(0.60, 0.08, 0.08), Color(0.45, 0.05, 0.05), Color(0.80, 0.20, 0.10))
 	_draw_wart_block(img, rng, 64, Color(0.10, 0.55, 0.50), Color(0.05, 0.35, 0.35), Color(0.30, 0.75, 0.70))
+	# Nether mushrooms (X-cross plants)
+	_draw_red_mushroom(img, rng, 65)
+	_draw_brown_mushroom(img, rng, 66)
+	_draw_crimson_fungus(img, rng, 67)
+	_draw_warped_fungus(img, rng, 68)
 
 	# World saturation lift — applied before mipmaps so downsampled levels
 	# inherit the boosted palette. Adaptive, so stone-gray pixels don't
@@ -145,6 +156,10 @@ static func create_atlas() -> ImageTexture:
 ## icons: the pixel data itself is muted, no shader or tint overlay involved.
 ## Cached independently from the world atlas.
 const ICON_DESATURATION: float = 0.68
+# Pure brightness lift applied to the icon atlas AFTER desaturation. Uniform
+# per-channel multiply preserves HSV saturation (so "not more saturated,
+# just brighter"); any channel that would exceed 1.0 is clamped.
+const ICON_BRIGHTNESS: float = 1.15
 
 static func create_icon_atlas() -> ImageTexture:
 	if _cached_icon != null:
@@ -164,10 +179,13 @@ static func create_icon_atlas() -> ImageTexture:
 			if c.a <= 0.001:
 				continue
 			var luma: float = c.r * _LUMA_R + c.g * _LUMA_G + c.b * _LUMA_B
+			var r: float = luma + (c.r - luma) * ICON_DESATURATION
+			var g: float = luma + (c.g - luma) * ICON_DESATURATION
+			var b: float = luma + (c.b - luma) * ICON_DESATURATION
 			img.set_pixel(x, y, Color(
-				luma + (c.r - luma) * ICON_DESATURATION,
-				luma + (c.g - luma) * ICON_DESATURATION,
-				luma + (c.b - luma) * ICON_DESATURATION,
+				clampf(r * ICON_BRIGHTNESS, 0.0, 1.0),
+				clampf(g * ICON_BRIGHTNESS, 0.0, 1.0),
+				clampf(b * ICON_BRIGHTNESS, 0.0, 1.0),
 				c.a,
 			))
 	_cached_icon = ImageTexture.create_from_image(img)
@@ -929,6 +947,101 @@ static func _draw_torch(img: Image, rng: RandomNumberGenerator, t: int) -> void:
 	_px(img, t, 5, 5, flame_outer); _px(img, t, 10, 5, flame_outer)
 	# Tip
 	_px(img, t, 7, 1, Color(1.0, 0.75, 0.20, 0.8))
+
+
+## Shared helper: draw a small mushroom shape (cap + stem) with a given
+## cap/spot/stem palette. Shape is a classic 16×16 pixel-art mushroom that
+## matches the density of the flower sprites — cap is wider than the stem
+## with a rounded dome, white spots on the cap for red/brown, none for fungi.
+static func _draw_mushroom_shape(img: Image, t: int, cap: Color, cap_hl: Color, cap_sh: Color, stem: Color, stem_sh: Color, spots: Color) -> void:
+	for y: int in TILE_SIZE:
+		for x: int in TILE_SIZE:
+			_px(img, t, x, y, Color(0, 0, 0, 0))
+	# Stem — short & stubby, 2px wide, center.
+	for y: int in range(8, 14):
+		_px(img, t, 7, y, stem)
+		_px(img, t, 8, y, stem_sh)
+	# Stem base shadow
+	_px(img, t, 6, 13, stem_sh)
+	_px(img, t, 9, 13, stem_sh)
+	# Cap — dome from y=3..7, widest at y=6.
+	var cap_rows: Array = [
+		[Vector2i(7, 3), Vector2i(8, 3)],
+		[Vector2i(6, 4), Vector2i(7, 4), Vector2i(8, 4), Vector2i(9, 4)],
+		[Vector2i(5, 5), Vector2i(6, 5), Vector2i(7, 5), Vector2i(8, 5), Vector2i(9, 5), Vector2i(10, 5)],
+		[Vector2i(4, 6), Vector2i(5, 6), Vector2i(6, 6), Vector2i(7, 6), Vector2i(8, 6), Vector2i(9, 6), Vector2i(10, 6), Vector2i(11, 6)],
+		[Vector2i(5, 7), Vector2i(6, 7), Vector2i(7, 7), Vector2i(8, 7), Vector2i(9, 7), Vector2i(10, 7)],
+	]
+	for row: Array in cap_rows:
+		for p: Vector2i in row:
+			_px(img, t, p.x, p.y, cap)
+	# Cap underside shadow (rim)
+	_px(img, t, 5, 7, cap_sh); _px(img, t, 10, 7, cap_sh)
+	_px(img, t, 6, 7, cap_sh); _px(img, t, 9, 7, cap_sh)
+	# Cap highlight — a 2×2 block top-left of center
+	_px(img, t, 6, 4, cap_hl)
+	_px(img, t, 5, 5, cap_hl)
+	_px(img, t, 6, 5, cap_hl)
+	# Spots — only drawn if the spot color has non-zero alpha
+	if spots.a > 0.0:
+		_px(img, t, 8, 4, spots)
+		_px(img, t, 4, 6, spots)
+		_px(img, t, 9, 6, spots)
+		_px(img, t, 7, 6, spots)
+
+
+## Red mushroom — classic Minecraft mushroom: bright red cap with white
+## spots, pale stem. Spawns rarely on netherrack outside the forest biomes.
+static func _draw_red_mushroom(img: Image, rng: RandomNumberGenerator, t: int) -> void:
+	_draw_mushroom_shape(
+		img, t,
+		Color(0.82, 0.12, 0.12, 1.0),   # cap base
+		Color(0.98, 0.38, 0.30, 1.0),   # cap highlight
+		Color(0.55, 0.06, 0.06, 1.0),   # cap rim shadow
+		Color(0.94, 0.88, 0.78, 1.0),   # stem
+		Color(0.72, 0.62, 0.48, 1.0),   # stem shadow
+		Color(1.00, 0.98, 0.92, 1.0),   # white spots
+	)
+
+
+## Brown mushroom — earthy brown cap, no spots (matches Minecraft).
+static func _draw_brown_mushroom(img: Image, rng: RandomNumberGenerator, t: int) -> void:
+	_draw_mushroom_shape(
+		img, t,
+		Color(0.50, 0.32, 0.18, 1.0),   # cap base
+		Color(0.72, 0.52, 0.32, 1.0),   # cap highlight
+		Color(0.32, 0.20, 0.10, 1.0),   # cap rim shadow
+		Color(0.90, 0.82, 0.70, 1.0),   # stem
+		Color(0.65, 0.56, 0.42, 1.0),   # stem shadow
+		Color(0, 0, 0, 0),              # no spots
+	)
+
+
+## Crimson fungus — red-magenta fungus with a warm dark stem, matches the
+## crimson forest palette. Small pinkish highlights stand in for the spots.
+static func _draw_crimson_fungus(img: Image, rng: RandomNumberGenerator, t: int) -> void:
+	_draw_mushroom_shape(
+		img, t,
+		Color(0.72, 0.10, 0.18, 1.0),   # cap base — deep crimson
+		Color(0.95, 0.28, 0.32, 1.0),   # cap highlight
+		Color(0.40, 0.04, 0.10, 1.0),   # cap rim shadow
+		Color(0.56, 0.22, 0.28, 1.0),   # stem — crimson-brown
+		Color(0.35, 0.10, 0.16, 1.0),   # stem shadow
+		Color(0, 0, 0, 0),              # no white spots — fungus, not mushroom
+	)
+
+
+## Warped fungus — teal/cyan fungus matching the warped forest palette.
+static func _draw_warped_fungus(img: Image, rng: RandomNumberGenerator, t: int) -> void:
+	_draw_mushroom_shape(
+		img, t,
+		Color(0.22, 0.58, 0.55, 1.0),   # cap base — warped teal
+		Color(0.48, 0.82, 0.75, 1.0),   # cap highlight
+		Color(0.08, 0.32, 0.32, 1.0),   # cap rim shadow
+		Color(0.20, 0.45, 0.45, 1.0),   # stem — darker teal
+		Color(0.08, 0.28, 0.30, 1.0),   # stem shadow
+		Color(0, 0, 0, 0),              # no white spots
+	)
 
 
 ## Netherrack — dark red-brown rocky texture with cracks and variation,

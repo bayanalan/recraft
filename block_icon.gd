@@ -3,7 +3,7 @@ class_name BlockIcon
 # Shared helper for drawing a block as an isometric 3D icon.
 # Used by both the hotbar and the block select (inventory) screen.
 
-const ATLAS_TILES: float = 65.0
+const ATLAS_TILES: float = 69.0
 const CUBE_H: float = 1.2
 
 # Face tints approximate the ratio between top/side faces under the world's
@@ -76,6 +76,10 @@ static func get_tiles(block_type: int) -> Vector2i:
 		Chunk.Block.WARPED_STEM: return Vector2i(62, 61)
 		Chunk.Block.NETHER_WART_BLOCK: return Vector2i(63, 63)
 		Chunk.Block.WARPED_WART_BLOCK: return Vector2i(64, 64)
+		Chunk.Block.RED_MUSHROOM: return Vector2i(65, 65)
+		Chunk.Block.BROWN_MUSHROOM: return Vector2i(66, 66)
+		Chunk.Block.CRIMSON_FUNGUS: return Vector2i(67, 67)
+		Chunk.Block.WARPED_FUNGUS: return Vector2i(68, 68)
 	return Vector2i(0, 0)
 
 
@@ -138,6 +142,10 @@ static func get_block_name(block_type: int) -> String:
 		Chunk.Block.WARPED_STEM: return "Warped Stem"
 		Chunk.Block.NETHER_WART_BLOCK: return "Nether Wart Block"
 		Chunk.Block.WARPED_WART_BLOCK: return "Warped Wart Block"
+		Chunk.Block.RED_MUSHROOM: return "Red Mushroom"
+		Chunk.Block.BROWN_MUSHROOM: return "Brown Mushroom"
+		Chunk.Block.CRIMSON_FUNGUS: return "Crimson Fungus"
+		Chunk.Block.WARPED_FUNGUS: return "Warped Fungus"
 	return "Unknown"
 
 
@@ -147,7 +155,11 @@ static func _is_sprite_block(block_type: int) -> bool:
 	return block_type == Chunk.Block.FIRE \
 		or block_type == Chunk.Block.POPPY \
 		or block_type == Chunk.Block.DANDELION \
-		or block_type == Chunk.Block.TORCH
+		or block_type == Chunk.Block.TORCH \
+		or block_type == Chunk.Block.RED_MUSHROOM \
+		or block_type == Chunk.Block.BROWN_MUSHROOM \
+		or block_type == Chunk.Block.CRIMSON_FUNGUS \
+		or block_type == Chunk.Block.WARPED_FUNGUS
 
 
 # Draw an isometric 3D block at center (cx, cy) with size s (half-width of top diamond).

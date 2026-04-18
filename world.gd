@@ -457,7 +457,9 @@ func place_block(origin: Vector3, direction: Vector3, block_type: int, player_aa
 	if existing != Chunk.Block.AIR and existing != Chunk.Block.WATER \
 		and existing != Chunk.Block.LAVA and existing != Chunk.Block.FIRE \
 		and existing != Chunk.Block.POPPY and existing != Chunk.Block.DANDELION \
-		and existing != Chunk.Block.TORCH:
+		and existing != Chunk.Block.TORCH \
+		and existing != Chunk.Block.RED_MUSHROOM and existing != Chunk.Block.BROWN_MUSHROOM \
+		and existing != Chunk.Block.CRIMSON_FUNGUS and existing != Chunk.Block.WARPED_FUNGUS:
 		return false
 	# Prevent trapping the player inside a solid block; water is non-collidable
 	# so placing water on the player is fine.
@@ -2199,6 +2201,11 @@ func regenerate_nether(size: int, seed: int) -> void:
 	generation_progress.emit(0.10, "Generating nether terrain...")
 	await get_tree().process_frame
 
+	# Pick adaptive biome thresholds so every nether is ≥ 1/3 wastes,
+	# ≥ 1/3 crimson, ≥ 1/3 warped no matter how the noise happened to fall
+	# for this seed. Must run before _gen_nether_column reads get_nether_biome.
+	_compute_nether_biome_thresholds()
+
 	# Nether terrain: netherrack everywhere instead of grass/dirt/stone.
 	var total_cols: int = world_size_chunks * world_size_chunks
 	var terrain_batch: int = maxi(1, total_cols / 20)
@@ -2219,7 +2226,8 @@ func regenerate_nether(size: int, seed: int) -> void:
 	_place_nether_ores(feature_rng)
 	# Huge fungi in the crimson and warped forest biomes.
 	_place_nether_trees(feature_rng)
-	# No flowers in the nether.
+	# Small mushrooms / fungi scattered across the nether surface.
+	_place_nether_mushrooms(feature_rng)
 
 	generation_progress.emit(0.42, "Building meshes...")
 	await get_tree().process_frame
@@ -2252,15 +2260,43 @@ const NETHER_WASTES: int = 0
 const NETHER_CRIMSON: int = 1
 const NETHER_WARPED: int = 2
 
+# Biome thresholds picked at generation time from the noise distribution so
+# every nether is guaranteed to be at least 1/3 wastes, 1/3 crimson, 1/3
+# warped regardless of seed. Fixed fallback values match the old ~30/30/40
+# split if thresholds haven't been computed yet (e.g. during first boot
+# before regenerate_nether is called).
+var _nether_biome_low: float = -0.15
+var _nether_biome_high: float = 0.15
 
-## Sample nether biome from biome_noise. Uses large-scale chunks of noise
-## so biomes are continuous regions, not speckled. Roughly 40% wastes,
-## 30% crimson, 30% warped.
+
+## Walk every (wx, wz) in the current world, sample biome noise, and pick
+## the 33rd/67th percentile values as the cut-points. This guarantees an
+## even 1/3 / 1/3 / 1/3 split across wastes, crimson, and warped forest —
+## the overall shape of the noise still determines *where* each biome sits
+## (so forests stay coherent), but the areas balance out.
+func _compute_nether_biome_thresholds() -> void:
+	var samples: PackedFloat32Array = PackedFloat32Array()
+	samples.resize(world_size_blocks * world_size_blocks)
+	var idx: int = 0
+	for wx: int in world_size_blocks:
+		for wz: int in world_size_blocks:
+			samples[idx] = biome_noise.get_noise_2d(float(wx) * 0.5, float(wz) * 0.5)
+			idx += 1
+	samples.sort()
+	var third: int = samples.size() / 3
+	_nether_biome_low = samples[third]
+	_nether_biome_high = samples[samples.size() - third]
+
+
+## Sample nether biome from biome_noise using the precomputed percentile
+## thresholds. Regions stay continuous because the noise is smooth — only
+## the cut-points shift, so a waste-heavy noise field gets tighter crimson
+## and warped bands rather than missing entire biomes.
 func get_nether_biome(wx: int, wz: int) -> int:
 	var b: float = biome_noise.get_noise_2d(float(wx) * 0.5, float(wz) * 0.5)
-	if b < -0.15:
+	if b < _nether_biome_low:
 		return NETHER_CRIMSON
-	elif b > 0.15:
+	elif b >= _nether_biome_high:
 		return NETHER_WARPED
 	return NETHER_WASTES
 
@@ -2473,6 +2509,79 @@ func _place_nether_tree(wx: int, gy: int, wz: int, stem_block: int, wart_block: 
 func _gen_set_wart(wx: int, wy: int, wz: int, block: int) -> void:
 	if get_voxel(wx, wy, wz) == Chunk.Block.AIR:
 		_gen_set(wx, wy, wz, block)
+
+
+## Scatter small mushrooms / fungi over the nether surface. Placement rules
+## per biome:
+##   Crimson nylium  → dense crimson fungus (rare warped sprinkles)
+##   Warped nylium   → dense warped fungus (rare crimson sprinkles)
+##   Netherrack (wastes, outside forests) → rare red/brown mushrooms
+## Uses the same grid-patch approach as overworld flowers but with a finer
+## cell so forests feel thickly carpeted while wastes stay sparse.
+func _place_nether_mushrooms(rng: RandomNumberGenerator) -> void:
+	const CELL: int = 6
+	const RADIUS: int = 1
+	for gx: int in range(2, world_size_blocks - 2, CELL):
+		for gz: int in range(2, world_size_blocks - 2, CELL):
+			# Patch center (jittered within the grid cell).
+			var cx: int = gx + rng.randi_range(0, CELL - 1)
+			var cz: int = gz + rng.randi_range(0, CELL - 1)
+			var cgy: int = _find_surface_y(cx, cz)
+			if cgy < 0 or cgy + 1 >= world_size_blocks:
+				continue
+			var surf: int = get_voxel(cx, cgy, cz)
+			# Decide the patch density & block type based on surface block.
+			var patch_chance: float
+			var primary: int
+			var secondary: int
+			var secondary_chance: float
+			if surf == Chunk.Block.CRIMSON_NYLIUM:
+				patch_chance = 0.50
+				primary = Chunk.Block.CRIMSON_FUNGUS
+				secondary = Chunk.Block.WARPED_FUNGUS
+				secondary_chance = 0.10
+			elif surf == Chunk.Block.WARPED_NYLIUM:
+				patch_chance = 0.50
+				primary = Chunk.Block.WARPED_FUNGUS
+				secondary = Chunk.Block.CRIMSON_FUNGUS
+				secondary_chance = 0.10
+			elif surf == Chunk.Block.NETHERRACK:
+				# Rare outside the forest biomes.
+				patch_chance = 0.08
+				primary = Chunk.Block.RED_MUSHROOM if rng.randf() < 0.5 else Chunk.Block.BROWN_MUSHROOM
+				secondary = primary  # other color is equally weighted per-bloom below
+				secondary_chance = 0.0
+			else:
+				continue
+			if rng.randf() > patch_chance:
+				continue
+			var count: int = rng.randi_range(1, 3)
+			for _i: int in count:
+				var wx: int = cx + rng.randi_range(-RADIUS, RADIUS)
+				var wz: int = cz + rng.randi_range(-RADIUS, RADIUS)
+				if wx < 0 or wx >= world_size_blocks:
+					continue
+				if wz < 0 or wz >= world_size_blocks:
+					continue
+				var gy: int = _find_surface_y(wx, wz)
+				if gy < 0 or gy + 1 >= world_size_blocks:
+					continue
+				var soil: int = get_voxel(wx, gy, wz)
+				# Only grow where the ground matches the biome the patch
+				# originated in — prevents crimson fungi from hopping onto
+				# netherrack at the forest edge.
+				if soil != surf:
+					continue
+				if get_voxel(wx, gy + 1, wz) != Chunk.Block.AIR:
+					continue
+				# For netherrack wastes, roll an independent red/brown choice
+				# per bloom so small clusters mix colors naturally.
+				var block: int = primary
+				if surf == Chunk.Block.NETHERRACK:
+					block = Chunk.Block.RED_MUSHROOM if rng.randf() < 0.5 else Chunk.Block.BROWN_MUSHROOM
+				elif rng.randf() < secondary_chance:
+					block = secondary
+				_gen_set(wx, gy + 1, wz, block)
 
 
 func regenerate(size: int, terrain_type: int, seed: int = 0) -> void:

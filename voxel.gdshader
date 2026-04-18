@@ -30,7 +30,7 @@ uniform vec3 ambient_light = vec3(0.20, 0.22, 0.28);
 // frame. xyz = world position, w = light level (0-16). Warm orange tint.
 uniform int block_light_count = 0;
 uniform vec4 block_lights[64];
-const float ATLAS_TILES = 65.0;
+const float ATLAS_TILES = 69.0;
 const float GLASS_TILE = 8.0;
 const float BARRIER_TILE = 47.0;
 const float PORTAL_TILE = 54.0;

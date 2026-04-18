@@ -428,15 +428,22 @@ func _push_block_lights() -> void:
 		return
 	var cam_pos: Vector3 = player.global_position
 	const MAX_LIGHTS: int = 64
-	const MAX_DIST_SQ: float = 256.0  # 16² — don't bother with lights beyond 16 blocks
+	# An emitter can affect any pixel within `level` blocks of itself. A pixel
+	# is visible out to the user's configured view distance. So the emitter is
+	# relevant iff the player is within (view_distance + level) of it —
+	# anything farther has its entire glow fogged to the sky color anyway.
+	# The old 16-block cap made torches "turn off" as soon as the player
+	# walked ~32 blocks away, even though the torch itself was still on screen.
+	var view_r: float = 256.0
+	if pause_menu != null:
+		view_r = float(pause_menu.view_distance)
 	# Collect nearby emitters sorted by distance.
 	var nearby: Array = []  # [dist_sq, Vector3i, level]
 	for pos: Vector3i in world.light_emitters:
 		var wpos := Vector3(pos.x + 0.5, pos.y + 0.5, pos.z + 0.5)
 		var d2: float = cam_pos.distance_squared_to(wpos)
-		# Extend range check to the emitter's max radius (level blocks).
 		var lvl: int = world.light_emitters[pos]
-		var max_r: float = float(lvl) + 16.0  # player can be up to 16 blocks from visible surface
+		var max_r: float = view_r + float(lvl)
 		if d2 > max_r * max_r:
 			continue
 		nearby.append([d2, pos, lvl])
@@ -745,11 +752,15 @@ func _ensure_valid_position() -> void:
 	var solid_feet: bool = feet != Chunk.Block.AIR and feet != Chunk.Block.WATER \
 		and feet != Chunk.Block.LAVA and feet != Chunk.Block.FIRE \
 		and feet != Chunk.Block.NETHER_PORTAL and feet != Chunk.Block.POPPY \
-		and feet != Chunk.Block.DANDELION and feet != Chunk.Block.TORCH
+		and feet != Chunk.Block.DANDELION and feet != Chunk.Block.TORCH \
+		and feet != Chunk.Block.RED_MUSHROOM and feet != Chunk.Block.BROWN_MUSHROOM \
+		and feet != Chunk.Block.CRIMSON_FUNGUS and feet != Chunk.Block.WARPED_FUNGUS
 	var solid_head: bool = head != Chunk.Block.AIR and head != Chunk.Block.WATER \
 		and head != Chunk.Block.LAVA and head != Chunk.Block.FIRE \
 		and head != Chunk.Block.NETHER_PORTAL and head != Chunk.Block.POPPY \
-		and head != Chunk.Block.DANDELION and head != Chunk.Block.TORCH
+		and head != Chunk.Block.DANDELION and head != Chunk.Block.TORCH \
+		and head != Chunk.Block.RED_MUSHROOM and head != Chunk.Block.BROWN_MUSHROOM \
+		and head != Chunk.Block.CRIMSON_FUNGUS and head != Chunk.Block.WARPED_FUNGUS
 	if solid_feet or solid_head:
 		# Try moving up to find air.
 		for dy: int in range(1, 20):
