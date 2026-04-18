@@ -1,7 +1,7 @@
 class_name BlockTextures
 
 const TILE_SIZE: int = 16
-const TILE_COUNT: int = 55
+const TILE_COUNT: int = 65
 # Atlas layout (left to right):
 # 0  stone            1  cobblestone       2  brick
 # 3  dirt             4  planks            5  log_side
@@ -114,6 +114,16 @@ static func create_atlas() -> ImageTexture:
 	_draw_nether_gold_ore(img, rng, 52)
 	_draw_nether_quartz_ore(img, rng, 53)
 	_draw_nether_portal(img, rng, 54)
+	_draw_crimson_nylium_top(img, rng, 55)
+	_draw_nylium_side(img, rng, 56, Color(0.55, 0.10, 0.10))  # crimson side
+	_draw_warped_nylium_top(img, rng, 57)
+	_draw_nylium_side(img, rng, 58, Color(0.15, 0.45, 0.45))  # warped side
+	_draw_stem_side(img, rng, 59, Color(0.45, 0.08, 0.25), Color(0.30, 0.05, 0.18))
+	_draw_stem_top(img, rng, 60, Color(0.60, 0.20, 0.28), Color(0.45, 0.10, 0.20))
+	_draw_stem_side(img, rng, 61, Color(0.18, 0.48, 0.55), Color(0.10, 0.32, 0.38))
+	_draw_stem_top(img, rng, 62, Color(0.30, 0.62, 0.68), Color(0.18, 0.48, 0.55))
+	_draw_wart_block(img, rng, 63, Color(0.60, 0.08, 0.08), Color(0.45, 0.05, 0.05), Color(0.80, 0.20, 0.10))
+	_draw_wart_block(img, rng, 64, Color(0.10, 0.55, 0.50), Color(0.05, 0.35, 0.35), Color(0.30, 0.75, 0.70))
 
 	# World saturation lift — applied before mipmaps so downsampled levels
 	# inherit the boosted palette. Adaptive, so stone-gray pixels don't
@@ -967,27 +977,78 @@ static func _draw_nether_gold_ore(img: Image, rng: RandomNumberGenerator, t: int
 			_px(img, t, nx, ny, gold_dk)
 
 
-## Nether quartz ore — netherrack base with white/cream quartz veins.
-## Distinctive from gold by being pale against the dark red background.
+## Nether quartz ore — netherrack base with multiple discrete long chunks
+## of pale quartz crystal scattered across the tile. Each chunk is a
+## thick rectangular shard with a highlight line, oriented randomly
+## (horizontal / vertical / diagonal) and well-separated from neighbors.
 static func _draw_nether_quartz_ore(img: Image, rng: RandomNumberGenerator, t: int) -> void:
 	_draw_netherrack(img, rng, t)
 	var quartz := Color(0.92, 0.88, 0.82)
-	var quartz_dk := Color(0.75, 0.70, 0.65)
-	# Quartz forms in small veins/lines rather than scattered dots.
-	var veins: int = rng.randi_range(3, 5)
-	for _v: int in veins:
+	var quartz_hi := Color(1.00, 0.97, 0.90)
+	var quartz_dk := Color(0.70, 0.65, 0.58)
+	# Track occupied pixels so shards don't overlap — keeps them as discrete
+	# chunks rather than one blob.
+	var occupied: Dictionary = {}
+	var target: int = rng.randi_range(4, 6)
+	var placed: int = 0
+	var attempts: int = 0
+	while placed < target and attempts < 40:
+		attempts += 1
+		# Choose orientation: 0 = horizontal, 1 = vertical, 2 = diag ↘, 3 = diag ↙
+		var orient: int = rng.randi_range(0, 3)
+		var length: int = rng.randi_range(4, 6)
+		var thickness: int = rng.randi_range(1, 2)
+		# Random start that fits the shape.
 		var sx: int = rng.randi_range(1, TILE_SIZE - 2)
 		var sy: int = rng.randi_range(1, TILE_SIZE - 2)
-		var length: int = rng.randi_range(2, 4)
-		var dx: int = rng.randi_range(-1, 1)
-		var dy: int = rng.randi_range(-1, 1)
-		if dx == 0 and dy == 0:
-			dx = 1
-		for _s: int in length:
-			if sx >= 0 and sx < TILE_SIZE and sy >= 0 and sy < TILE_SIZE:
-				_px(img, t, sx, sy, quartz if rng.randf() < 0.6 else quartz_dk)
-			sx += dx
-			sy += dy
+		# Collect target pixels for this shard.
+		var pixels: Array[Vector2i] = []
+		for i: int in length:
+			for th: int in thickness:
+				var px: int; var py: int
+				match orient:
+					0:
+						px = sx + i; py = sy + th
+					1:
+						px = sx + th; py = sy + i
+					2:
+						px = sx + i; py = sy + i + th
+					_:
+						px = sx + i; py = sy - i + th
+				if px < 0 or px >= TILE_SIZE or py < 0 or py >= TILE_SIZE:
+					pixels.clear()
+					break
+				pixels.append(Vector2i(px, py))
+			if pixels.is_empty():
+				break
+		if pixels.is_empty():
+			continue
+		# Reject if any target pixel is within 1 of an existing shard —
+		# guarantees visual separation between chunks.
+		var conflict: bool = false
+		for p: Vector2i in pixels:
+			for dx: int in [-1, 0, 1]:
+				for dy: int in [-1, 0, 1]:
+					if occupied.has(Vector2i(p.x + dx, p.y + dy)):
+						conflict = true
+						break
+				if conflict: break
+			if conflict: break
+		if conflict:
+			continue
+		# Paint the shard with a bright highlight pixel on the first block.
+		for i: int in pixels.size():
+			var p: Vector2i = pixels[i]
+			occupied[p] = true
+			var c: Color
+			if i == 0:
+				c = quartz_hi  # tip highlight
+			elif i == pixels.size() - 1:
+				c = quartz_dk  # darker tail
+			else:
+				c = quartz
+			_px(img, t, p.x, p.y, c)
+		placed += 1
 
 
 ## Nether portal — translucent purple swirl texture. Alpha < 1 so it reads
@@ -1006,6 +1067,117 @@ static func _draw_nether_portal(img: Image, rng: RandomNumberGenerator, t: int) 
 			else:
 				purple = Color(0.75, 0.40, 1.00, 0.90)  # bright sparkle
 			_px(img, t, x, y, purple)
+
+
+## Crimson nylium top — deep red fungus crust over dark netherrack. Bright
+## red fungal spots scattered on a dark red-brown base.
+static func _draw_crimson_nylium_top(img: Image, rng: RandomNumberGenerator, t: int) -> void:
+	for y: int in TILE_SIZE:
+		for x: int in TILE_SIZE:
+			var r: float = rng.randf()
+			var c: Color
+			if r < 0.15:
+				c = Color(0.25, 0.06, 0.06)  # dark crack
+			elif r < 0.55:
+				c = Color(0.52, 0.10, 0.10)  # base crimson
+			elif r < 0.85:
+				c = Color(0.65, 0.14, 0.14)  # mid
+			else:
+				c = Color(0.80, 0.22, 0.15)  # bright spore
+			_px(img, t, x, y, c)
+
+
+## Warped nylium top — blue/cyan fungus crust over dark netherrack.
+static func _draw_warped_nylium_top(img: Image, rng: RandomNumberGenerator, t: int) -> void:
+	for y: int in TILE_SIZE:
+		for x: int in TILE_SIZE:
+			var r: float = rng.randf()
+			var c: Color
+			if r < 0.15:
+				c = Color(0.05, 0.18, 0.20)  # dark crack
+			elif r < 0.55:
+				c = Color(0.12, 0.40, 0.40)  # base warped teal
+			elif r < 0.85:
+				c = Color(0.18, 0.55, 0.52)  # mid
+			else:
+				c = Color(0.30, 0.72, 0.62)  # bright spore
+			_px(img, t, x, y, c)
+
+
+## Nylium side — top half is the colored fungus fade, bottom half is
+## netherrack so the transition reads naturally at the grass-like edge.
+static func _draw_nylium_side(img: Image, rng: RandomNumberGenerator, t: int, fungus: Color) -> void:
+	_draw_netherrack(img, rng, t)
+	# Top 5 pixels get the fungus color overlay with a jagged bottom edge.
+	for x: int in TILE_SIZE:
+		var edge: int = rng.randi_range(2, 5)  # how far down the fungus bleeds
+		for y: int in edge:
+			var r: float = rng.randf()
+			var shade: float = 0.85 + r * 0.3
+			var c := Color(fungus.r * shade, fungus.g * shade, fungus.b * shade)
+			if r < 0.2:
+				c = c.darkened(0.3)
+			_px(img, t, x, y, c)
+
+
+## Generic stem side bark — vertical ridges + noise for organic fungal feel.
+## `base` is the main color, `dark` the crevice color.
+static func _draw_stem_side(img: Image, rng: RandomNumberGenerator, t: int, base: Color, dark: Color) -> void:
+	for y: int in TILE_SIZE:
+		for x: int in TILE_SIZE:
+			# Vertical ridges every 3-4 pixels.
+			var ridge: bool = (x % 4) == 0 or (x % 4) == 3
+			var c: Color
+			if ridge:
+				c = dark if rng.randf() < 0.6 else base
+			else:
+				var r: float = rng.randf()
+				if r < 0.25:
+					c = dark
+				elif r < 0.85:
+					c = base
+				else:
+					c = Color(base.r * 1.2, base.g * 1.2, base.b * 1.2)
+			_px(img, t, x, y, c)
+
+
+## Stem top cross-section — concentric rings of the stem colors.
+static func _draw_stem_top(img: Image, rng: RandomNumberGenerator, t: int, base: Color, dark: Color) -> void:
+	var cx: float = 7.5
+	var cy: float = 7.5
+	for y: int in TILE_SIZE:
+		for x: int in TILE_SIZE:
+			var d: float = sqrt((x - cx) * (x - cx) + (y - cy) * (y - cy))
+			var ring: int = int(d) % 3
+			var c: Color
+			if ring == 0:
+				c = base
+			elif ring == 1:
+				c = Color(base.r * 0.85, base.g * 0.85, base.b * 0.85)
+			else:
+				c = dark
+			# Sprinkle noise
+			if rng.randf() < 0.15:
+				c = c.darkened(0.15)
+			_px(img, t, x, y, c)
+
+
+## Wart block — large organic fungal blocks. Mottled pattern with a bright
+## spore layer on top and darker depths, plus occasional bright sparkles.
+static func _draw_wart_block(img: Image, rng: RandomNumberGenerator, t: int, base: Color, dark: Color, bright: Color) -> void:
+	for y: int in TILE_SIZE:
+		for x: int in TILE_SIZE:
+			var r: float = rng.randf()
+			var c: Color
+			if r < 0.10:
+				c = bright  # sparkle
+			elif r < 0.35:
+				c = Color(base.r * 1.1, base.g * 1.1, base.b * 1.1).clamp(Color(0,0,0), Color(1,1,1))
+			elif r < 0.75:
+				c = base
+			else:
+				c = dark
+			_px(img, t, x, y, c)
 
 
 static func _draw_lava(img: Image, rng: RandomNumberGenerator, t: int) -> void:

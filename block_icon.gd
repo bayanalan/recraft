@@ -3,7 +3,7 @@ class_name BlockIcon
 # Shared helper for drawing a block as an isometric 3D icon.
 # Used by both the hotbar and the block select (inventory) screen.
 
-const ATLAS_TILES: float = 55.0
+const ATLAS_TILES: float = 65.0
 const CUBE_H: float = 1.2
 
 # Face tints approximate the ratio between top/side faces under the world's
@@ -70,6 +70,12 @@ static func get_tiles(block_type: int) -> Vector2i:
 		Chunk.Block.NETHER_GOLD_ORE: return Vector2i(52, 52)
 		Chunk.Block.NETHER_QUARTZ_ORE: return Vector2i(53, 53)
 		Chunk.Block.NETHER_PORTAL: return Vector2i(54, 54)
+		Chunk.Block.CRIMSON_NYLIUM: return Vector2i(55, 56)
+		Chunk.Block.WARPED_NYLIUM: return Vector2i(57, 58)
+		Chunk.Block.CRIMSON_STEM: return Vector2i(60, 59)
+		Chunk.Block.WARPED_STEM: return Vector2i(62, 61)
+		Chunk.Block.NETHER_WART_BLOCK: return Vector2i(63, 63)
+		Chunk.Block.WARPED_WART_BLOCK: return Vector2i(64, 64)
 	return Vector2i(0, 0)
 
 
@@ -126,6 +132,12 @@ static func get_block_name(block_type: int) -> String:
 		Chunk.Block.NETHER_GOLD_ORE: return "Nether Gold Ore"
 		Chunk.Block.NETHER_QUARTZ_ORE: return "Nether Quartz Ore"
 		Chunk.Block.NETHER_PORTAL: return "Nether Portal"
+		Chunk.Block.CRIMSON_NYLIUM: return "Crimson Nylium"
+		Chunk.Block.WARPED_NYLIUM: return "Warped Nylium"
+		Chunk.Block.CRIMSON_STEM: return "Crimson Stem"
+		Chunk.Block.WARPED_STEM: return "Warped Stem"
+		Chunk.Block.NETHER_WART_BLOCK: return "Nether Wart Block"
+		Chunk.Block.WARPED_WART_BLOCK: return "Warped Wart Block"
 	return "Unknown"
 
 

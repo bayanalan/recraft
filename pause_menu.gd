@@ -1,7 +1,7 @@
 class_name PauseMenu
 extends CanvasLayer
 
-enum Screen { MAIN, SAVE, LOAD, NEW_WORLD, SETTINGS, CONTROLS, LOADING }
+enum Screen { MAIN, SAVE, LOAD, NEW_WORLD, SETTINGS, VIDEO, CONTROLS, LOADING }
 
 signal resume_requested
 signal save_requested(save_name: String)
@@ -282,6 +282,7 @@ func _show_screen(screen: int) -> void:
 		Screen.LOAD: _build_load()
 		Screen.NEW_WORLD: _build_new_world()
 		Screen.SETTINGS: _build_settings()
+		Screen.VIDEO: _build_video_settings()
 		Screen.CONTROLS: _build_controls()
 		Screen.LOADING: _build_loading()
 
@@ -553,6 +554,17 @@ func _style_scrollbar(sb: ScrollBar) -> void:
 func _style_scroll_container(sc: ScrollContainer) -> void:
 	_style_scrollbar(sc.get_v_scroll_bar())
 	_style_scrollbar(sc.get_h_scroll_bar())
+	# Prevent jitter when scrolling past bounds (especially over remote
+	# input like Steam Link that may flood scroll events). Disabling
+	# follow_focus prevents auto-scroll triggered by focused children;
+	# clamping allow_greater/allow_lesser prevents overshoot bounce.
+	sc.follow_focus = false
+	var vb: VScrollBar = sc.get_v_scroll_bar()
+	vb.allow_greater = false
+	vb.allow_lesser = false
+	var hb: HScrollBar = sc.get_h_scroll_bar()
+	hb.allow_greater = false
+	hb.allow_lesser = false
 
 
 ## Parse a seed string. Empty -> 0 (random). A pure int -> parsed. Otherwise
@@ -928,10 +940,9 @@ const VIEW_DISTANCE_MAX: int = 4096
 const VIEW_DISTANCE_STEP: int = 64
 
 
+## Top-level settings hub — shows the most-tweaked options at the top (FOV
+## and GUI Scale) plus buttons to dive into Video Settings and Controls.
 func _build_settings() -> void:
-	# Top row: tiny "Reset" button at the left, centered title in the middle.
-	# An invisible spacer of the same width on the right keeps the title
-	# visually centered in the panel.
 	const RESET_W: int = 78
 	var top_row := HBoxContainer.new()
 	top_row.add_theme_constant_override("separation", 0)
@@ -953,6 +964,79 @@ func _build_settings() -> void:
 	right_spacer.custom_minimum_size = Vector2(RESET_W, 0)
 	top_row.add_child(right_spacer)
 
+	_content.add_child(_make_separator(16))
+
+	# FOV at the top — most-tweaked visual setting.
+	_content.add_child(_make_label("Field of View:", 26))
+	var fov_value_label := _make_label(_format_fov(int(round(base_fov))), 24, Color(0.85, 0.85, 0.85))
+	fov_value_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	fov_value_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_content.add_child(fov_value_label)
+	var fov_slider := HSlider.new()
+	fov_slider.min_value = 50.0
+	fov_slider.max_value = 120.0
+	fov_slider.step = 1.0
+	fov_slider.value = base_fov
+	fov_slider.custom_minimum_size = Vector2(380, 28)
+	_style_slider(fov_slider)
+	fov_slider.value_changed.connect(func(v: float):
+		base_fov = v
+		fov_value_label.text = _format_fov(int(round(base_fov)))
+		base_fov_changed.emit(base_fov)
+		_save_settings()
+	)
+	_content.add_child(fov_slider)
+
+	_content.add_child(_make_separator(16))
+
+	# GUI Scale near the top — also frequently adjusted.
+	_content.add_child(_make_label("GUI Scale:", 26))
+	var gs_option := OptionButton.new()
+	_apply_font(gs_option, 29)
+	gs_option.custom_minimum_size = Vector2(380, 44)
+	for factor: float in GUI_SCALES:
+		var label: String
+		if factor == float(int(factor)):
+			label = "%dx" % int(factor)
+		else:
+			label = "%.1fx" % factor
+		gs_option.add_item(label)
+	gs_option.selected = maxi(0, GUI_SCALES.find(gui_scale))
+	_style_button(gs_option)
+	gs_option.item_selected.connect(func(idx: int):
+		gui_scale = GUI_SCALES[idx]
+		gui_scale_changed.emit(gui_scale)
+		_save_settings()
+	)
+	_content.add_child(gs_option)
+
+	_content.add_child(_make_separator(24))
+
+	# Sub-screens.
+	var btn_video := _make_button("Video Settings", 280)
+	btn_video.pressed.connect(func(): _show_screen(Screen.VIDEO))
+	_content.add_child(btn_video)
+
+	_content.add_child(_make_separator(6))
+
+	var btn_ctrl := _make_button("Controls", 280)
+	btn_ctrl.pressed.connect(func(): _show_screen(Screen.CONTROLS))
+	_content.add_child(btn_ctrl)
+
+	_content.add_child(_make_separator(20))
+
+	var back_row := HBoxContainer.new()
+	back_row.alignment = BoxContainer.ALIGNMENT_CENTER
+	_content.add_child(back_row)
+	var back := _make_button("Back", 140)
+	back.pressed.connect(func(): _show_screen(Screen.MAIN))
+	back_row.add_child(back)
+
+
+## Video sub-screen: view distance, connected textures, mipmaps, aspect
+## ratio, fullscreen.
+func _build_video_settings() -> void:
+	_content.add_child(_make_title("Video Settings"))
 	_content.add_child(_make_separator(8))
 
 	# Wrap every setting widget in a ScrollContainer so a GUI scale too large
@@ -991,71 +1075,16 @@ func _build_settings() -> void:
 		_save_settings()
 	)
 	list.add_child(slider)
-
 	list.add_child(_make_separator(16))
 
-	# FOV slider — base field of view, sprint still bumps this by ~10%.
-	# Endpoints get flavor labels ("Legally Blind" at 50, "I can see
-	# everything..." at 120) so extremes read as intentional.
-	list.add_child(_make_label("Field of View:", 26))
-	var fov_value_label := _make_label(_format_fov(int(round(base_fov))), 24, Color(0.85, 0.85, 0.85))
-	fov_value_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	fov_value_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	list.add_child(fov_value_label)
-
-	var fov_slider := HSlider.new()
-	fov_slider.min_value = 50.0
-	fov_slider.max_value = 120.0
-	fov_slider.step = 1.0
-	fov_slider.value = base_fov
-	fov_slider.custom_minimum_size = Vector2(380, 28)
-	_style_slider(fov_slider)
-	fov_slider.value_changed.connect(func(v: float):
-		base_fov = v
-		fov_value_label.text = _format_fov(int(round(base_fov)))
-		base_fov_changed.emit(base_fov)
-		_save_settings()
-	)
-	list.add_child(fov_slider)
-
-	list.add_child(_make_separator(16))
-
-	# Mouse sensitivity — 1-200 slider with 100 as "normal". Endpoints have
-	# flavor labels ("Sleepy" at 1, "WEEEEEE" at 200) so the extremes feel
-	# intentional rather than broken. Player scales MOUSE_SENS_BASE by /100.
-	list.add_child(_make_label("Mouse Sensitivity:", 26))
-	var ms_value_label := _make_label(_format_sensitivity(mouse_sensitivity), 24, Color(0.85, 0.85, 0.85))
-	ms_value_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	ms_value_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	list.add_child(ms_value_label)
-	var ms_slider := HSlider.new()
-	ms_slider.min_value = 1
-	ms_slider.max_value = 200
-	ms_slider.step = 1
-	ms_slider.value = mouse_sensitivity
-	ms_slider.custom_minimum_size = Vector2(380, 28)
-	_style_slider(ms_slider)
-	ms_slider.value_changed.connect(func(v: float):
-		mouse_sensitivity = int(v)
-		ms_value_label.text = _format_sensitivity(mouse_sensitivity)
-		mouse_sensitivity_changed.emit(mouse_sensitivity)
-		_save_settings()
-	)
-	list.add_child(ms_slider)
-
-	list.add_child(_make_separator(16))
-
-	# Connected Textures toggle — merges adjacent glass frames into one pane.
+	# Connected Textures toggle.
 	var ct_row := HBoxContainer.new()
 	ct_row.alignment = BoxContainer.ALIGNMENT_CENTER
-	ct_row.add_theme_constant_override("separation", 12)
 	list.add_child(ct_row)
 	var ct_checkbox := CheckBox.new()
 	ct_checkbox.button_pressed = connected_textures
 	ct_checkbox.text = "Connected Textures"
-	if _font != null:
-		ct_checkbox.add_theme_font_override("font", _font)
-	ct_checkbox.add_theme_font_size_override("font_size", _fs(26))
+	_apply_font(ct_checkbox, 26)
 	ct_checkbox.add_theme_color_override("font_color", Color(0.95, 0.95, 0.95))
 	_style_checkbox(ct_checkbox)
 	ct_checkbox.toggled.connect(func(v: bool):
@@ -1065,40 +1094,14 @@ func _build_settings() -> void:
 	)
 	ct_row.add_child(ct_checkbox)
 
-	# Enable Flying toggle — disables the double-tap-space creative fly.
-	var fly_row := HBoxContainer.new()
-	fly_row.alignment = BoxContainer.ALIGNMENT_CENTER
-	fly_row.add_theme_constant_override("separation", 12)
-	list.add_child(fly_row)
-	var fly_checkbox := CheckBox.new()
-	fly_checkbox.button_pressed = flying_enabled
-	fly_checkbox.text = "Enable Flying"
-	if _font != null:
-		fly_checkbox.add_theme_font_override("font", _font)
-	fly_checkbox.add_theme_font_size_override("font_size", _fs(26))
-	fly_checkbox.add_theme_color_override("font_color", Color(0.95, 0.95, 0.95))
-	_style_checkbox(fly_checkbox)
-	fly_checkbox.toggled.connect(func(v: bool):
-		flying_enabled = v
-		flying_enabled_changed.emit(v)
-		_save_settings()
-	)
-	fly_row.add_child(fly_checkbox)
-
-	list.add_child(_make_separator(16))
-
-	# Mipmaps toggle — smooths distant block surfaces by sampling a lower-
-	# resolution mip level; costs a slight blurriness on close pixels.
+	# Mipmaps toggle.
 	var mm_row := HBoxContainer.new()
 	mm_row.alignment = BoxContainer.ALIGNMENT_CENTER
-	mm_row.add_theme_constant_override("separation", 12)
 	list.add_child(mm_row)
 	var mm_checkbox := CheckBox.new()
 	mm_checkbox.button_pressed = mipmaps
 	mm_checkbox.text = "Mipmaps"
-	if _font != null:
-		mm_checkbox.add_theme_font_override("font", _font)
-	mm_checkbox.add_theme_font_size_override("font_size", _fs(26))
+	_apply_font(mm_checkbox, 26)
 	mm_checkbox.add_theme_color_override("font_color", Color(0.95, 0.95, 0.95))
 	_style_checkbox(mm_checkbox)
 	mm_checkbox.toggled.connect(func(v: bool):
@@ -1110,84 +1113,14 @@ func _build_settings() -> void:
 
 	list.add_child(_make_separator(16))
 
-	# Sprint Mode — Hold (default) or Toggle. Hold keeps sprinting until you
-	# stop moving (Minecraft behavior); Toggle flips always-sprint on/off.
-	list.add_child(_make_label("Sprint Mode:", 26))
-	var sprint_option := OptionButton.new()
-	if _font != null:
-		sprint_option.add_theme_font_override("font", _font)
-	sprint_option.add_theme_font_size_override("font_size", _fs(29))
-	sprint_option.custom_minimum_size = Vector2(380, 44)
-	sprint_option.add_item("Hold")
-	sprint_option.add_item("Toggle")
-	sprint_option.selected = 1 if sprint_toggle else 0
-	_style_button(sprint_option)
-	sprint_option.item_selected.connect(func(idx: int):
-		sprint_toggle = idx == 1
-		sprint_toggle_changed.emit(sprint_toggle)
-		_save_settings()
-	)
-	list.add_child(sprint_option)
-
-	list.add_child(_make_separator(16))
-
-	# Crouch Mode — same Hold/Toggle semantics as Sprint Mode.
-	list.add_child(_make_label("Crouch Mode:", 26))
-	var crouch_option := OptionButton.new()
-	if _font != null:
-		crouch_option.add_theme_font_override("font", _font)
-	crouch_option.add_theme_font_size_override("font_size", _fs(29))
-	crouch_option.custom_minimum_size = Vector2(380, 44)
-	crouch_option.add_item("Hold")
-	crouch_option.add_item("Toggle")
-	crouch_option.selected = 1 if crouch_toggle else 0
-	_style_button(crouch_option)
-	crouch_option.item_selected.connect(func(idx: int):
-		crouch_toggle = idx == 1
-		crouch_toggle_changed.emit(crouch_toggle)
-		_save_settings()
-	)
-	list.add_child(crouch_option)
-
-	list.add_child(_make_separator(16))
-
-	# GUI Scale — multiplier applied to content_scale_factor.
-	list.add_child(_make_label("GUI Scale:", 26))
-	var gs_option := OptionButton.new()
-	if _font != null:
-		gs_option.add_theme_font_override("font", _font)
-	gs_option.add_theme_font_size_override("font_size", _fs(29))
-	gs_option.custom_minimum_size = Vector2(380, 44)
-	for factor: float in GUI_SCALES:
-		var label: String
-		if factor == float(int(factor)):
-			label = "%dx" % int(factor)
-		else:
-			label = "%.1fx" % factor
-		gs_option.add_item(label)
-	var gs_idx: int = GUI_SCALES.find(gui_scale)
-	gs_option.selected = maxi(0, gs_idx)
-	_style_button(gs_option)
-	gs_option.item_selected.connect(func(idx: int):
-		gui_scale = GUI_SCALES[idx]
-		gui_scale_changed.emit(gui_scale)
-		_save_settings()
-	)
-	list.add_child(gs_option)
-
-	list.add_child(_make_separator(16))
-
-	# Aspect Ratio — dropdown that letterboxes / pillarboxes the viewport.
+	# Aspect Ratio dropdown.
 	list.add_child(_make_label("Aspect Ratio:", 26))
 	var ar_option := OptionButton.new()
-	if _font != null:
-		ar_option.add_theme_font_override("font", _font)
-	ar_option.add_theme_font_size_override("font_size", _fs(29))
+	_apply_font(ar_option, 29)
 	ar_option.custom_minimum_size = Vector2(380, 44)
 	for name: String in ASPECT_RATIOS:
 		ar_option.add_item(name)
-	var ar_idx: int = ASPECT_RATIOS.find(aspect_ratio)
-	ar_option.selected = maxi(0, ar_idx)
+	ar_option.selected = maxi(0, ASPECT_RATIOS.find(aspect_ratio))
 	_style_button(ar_option)
 	ar_option.item_selected.connect(func(idx: int):
 		aspect_ratio = ASPECT_RATIOS[idx]
@@ -1198,12 +1131,10 @@ func _build_settings() -> void:
 
 	list.add_child(_make_separator(16))
 
-	# Fullscreen — None / Borderless / Exclusive dropdown.
+	# Fullscreen dropdown.
 	list.add_child(_make_label("Fullscreen:", 26))
 	var fs_option := OptionButton.new()
-	if _font != null:
-		fs_option.add_theme_font_override("font", _font)
-	fs_option.add_theme_font_size_override("font_size", _fs(29))
+	_apply_font(fs_option, 29)
 	fs_option.custom_minimum_size = Vector2(380, 44)
 	for mode_name: String in FULLSCREEN_MODES:
 		fs_option.add_item(mode_name)
@@ -1216,25 +1147,14 @@ func _build_settings() -> void:
 	)
 	list.add_child(fs_option)
 
-	list.add_child(_make_separator(16))
-
-	# Controls tab — opens the key-rebind screen.
-	var controls_row := HBoxContainer.new()
-	controls_row.alignment = BoxContainer.ALIGNMENT_CENTER
-	list.add_child(controls_row)
-	var controls_btn := _make_button("Controls...", 280)
-	controls_btn.pressed.connect(func(): _show_screen(Screen.CONTROLS))
-	controls_row.add_child(controls_btn)
-
 	_content.add_child(_make_separator(20))
 
 	var back_row := HBoxContainer.new()
 	back_row.alignment = BoxContainer.ALIGNMENT_CENTER
 	_content.add_child(back_row)
 	var back := _make_button("Back", 140)
-	back.pressed.connect(func(): _show_screen(Screen.MAIN))
+	back.pressed.connect(func(): _show_screen(Screen.SETTINGS))
 	back_row.add_child(back)
-
 
 # --- Controls screen ---
 
@@ -1247,11 +1167,98 @@ var _rebinding_button: Button = null
 func _build_controls() -> void:
 	_content.add_child(_make_title("Controls"))
 	_content.add_child(_make_separator(8))
-	_content.add_child(_make_label("Click a binding to rebind. Esc cancels a rebind.", 22, Color(0.7, 0.7, 0.7)))
-	_content.add_child(_make_separator(8))
+
+	var scroll := ScrollContainer.new()
+	scroll.custom_minimum_size = Vector2(400, 460)
+	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_style_scroll_container(scroll)
+	_content.add_child(scroll)
+	var list := VBoxContainer.new()
+	list.add_theme_constant_override("separation", 8)
+	list.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	scroll.add_child(list)
+
+	# Mouse sensitivity.
+	list.add_child(_make_label("Mouse Sensitivity:", 26))
+	var ms_label := _make_label(_format_sensitivity(mouse_sensitivity), 24, Color(0.85, 0.85, 0.85))
+	ms_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	ms_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	list.add_child(ms_label)
+	var ms_slider := HSlider.new()
+	ms_slider.min_value = 1
+	ms_slider.max_value = 200
+	ms_slider.step = 1
+	ms_slider.value = mouse_sensitivity
+	ms_slider.custom_minimum_size = Vector2(380, 28)
+	_style_slider(ms_slider)
+	ms_slider.value_changed.connect(func(v: float):
+		mouse_sensitivity = int(v)
+		ms_label.text = _format_sensitivity(mouse_sensitivity)
+		mouse_sensitivity_changed.emit(mouse_sensitivity)
+		_save_settings()
+	)
+	list.add_child(ms_slider)
+
+	list.add_child(_make_separator(16))
+
+	# Sprint Mode dropdown.
+	list.add_child(_make_label("Sprint Mode:", 26))
+	var sprint_option := OptionButton.new()
+	_apply_font(sprint_option, 29)
+	sprint_option.custom_minimum_size = Vector2(380, 44)
+	sprint_option.add_item("Hold")
+	sprint_option.add_item("Toggle")
+	sprint_option.selected = 1 if sprint_toggle else 0
+	_style_button(sprint_option)
+	sprint_option.item_selected.connect(func(idx: int):
+		sprint_toggle = idx == 1
+		sprint_toggle_changed.emit(sprint_toggle)
+		_save_settings()
+	)
+	list.add_child(sprint_option)
+	list.add_child(_make_separator(16))
+
+	# Crouch Mode dropdown.
+	list.add_child(_make_label("Crouch Mode:", 26))
+	var crouch_option := OptionButton.new()
+	_apply_font(crouch_option, 29)
+	crouch_option.custom_minimum_size = Vector2(380, 44)
+	crouch_option.add_item("Hold")
+	crouch_option.add_item("Toggle")
+	crouch_option.selected = 1 if crouch_toggle else 0
+	_style_button(crouch_option)
+	crouch_option.item_selected.connect(func(idx: int):
+		crouch_toggle = idx == 1
+		crouch_toggle_changed.emit(crouch_toggle)
+		_save_settings()
+	)
+	list.add_child(crouch_option)
+	list.add_child(_make_separator(16))
+
+	# Enable Flying checkbox.
+	var fly_row := HBoxContainer.new()
+	fly_row.alignment = BoxContainer.ALIGNMENT_CENTER
+	list.add_child(fly_row)
+	var fly_cb := CheckBox.new()
+	fly_cb.button_pressed = flying_enabled
+	fly_cb.text = "Enable Flying"
+	_apply_font(fly_cb, 26)
+	fly_cb.add_theme_color_override("font_color", Color(0.95, 0.95, 0.95))
+	_style_checkbox(fly_cb)
+	fly_cb.toggled.connect(func(v: bool):
+		flying_enabled = v
+		flying_enabled_changed.emit(v)
+		_save_settings()
+	)
+	fly_row.add_child(fly_cb)
+
+	list.add_child(_make_separator(20))
+	list.add_child(_make_label("Key Bindings (click to rebind, Esc cancels):", 22, Color(0.7, 0.7, 0.7)))
+	list.add_child(_make_separator(4))
 
 	for entry: Array in ControlsConfig.ACTIONS:
-		_content.add_child(_make_controls_row(entry[0], entry[1]))
+		list.add_child(_make_controls_row(entry[0], entry[1]))
 
 	_content.add_child(_make_separator(20))
 
@@ -1297,8 +1304,7 @@ func _unhandled_input(event: InputEvent) -> void:
 			return  # cannot escape from loading screen
 		if _current_screen == Screen.MAIN:
 			resume_requested.emit()
-		elif _current_screen == Screen.CONTROLS:
-			# Sub-submenu — go up one level to Settings, not all the way out.
+		elif _current_screen == Screen.CONTROLS or _current_screen == Screen.VIDEO:
 			_show_screen(Screen.SETTINGS)
 		else:
 			_show_screen(Screen.MAIN)

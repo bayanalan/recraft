@@ -5,7 +5,7 @@ extends Control
 ## aesthetic. When the player picks a world, we set GameConfig statics and
 ## switch to the game scene.
 
-enum Screen { MAIN, NEW_WORLD, LOAD, SETTINGS, CONTROLS }
+enum Screen { MAIN, NEW_WORLD, LOAD, SETTINGS, VIDEO, CONTROLS }
 
 const DEFAULT_VIEW_DISTANCE: int = 256
 const DEFAULT_BASE_FOV: int = 70
@@ -186,6 +186,7 @@ func _build_screen() -> void:
 		Screen.NEW_WORLD: _build_new_world()
 		Screen.LOAD: _build_load()
 		Screen.SETTINGS: _build_settings()
+		Screen.VIDEO: _build_video_settings()
 		Screen.CONTROLS: _build_controls()
 
 	# Version label — bottom-left corner, visible on every screen.
@@ -222,7 +223,7 @@ func _show_screen(screen: int) -> void:
 func _unhandled_input(event: InputEvent) -> void:
 	if event is InputEventKey and event.pressed and event.keycode == KEY_ESCAPE:
 		if _current_screen != Screen.MAIN:
-			if _current_screen == Screen.CONTROLS:
+			if _current_screen == Screen.CONTROLS or _current_screen == Screen.VIDEO:
 				_show_screen(Screen.SETTINGS)
 			else:
 				_show_screen(Screen.MAIN)
@@ -497,12 +498,12 @@ func _reset_all_settings() -> void:
 	_show_screen(Screen.SETTINGS)
 
 
+## Settings hub — FOV + GUI Scale at top, buttons to Video and Controls.
 func _build_settings() -> void:
 	const RESET_W: int = 78
 	var top_row := HBoxContainer.new()
 	top_row.add_theme_constant_override("separation", 0)
 	_content.add_child(top_row)
-
 	var reset_btn := Button.new()
 	reset_btn.text = "Reset"
 	reset_btn.custom_minimum_size = Vector2(RESET_W, 0)
@@ -510,30 +511,91 @@ func _build_settings() -> void:
 	_style_button(reset_btn)
 	reset_btn.pressed.connect(_reset_all_settings)
 	top_row.add_child(reset_btn)
-
 	var title := _make_title("Settings")
 	title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	top_row.add_child(title)
-
 	var right_spacer := Control.new()
 	right_spacer.custom_minimum_size = Vector2(RESET_W, 0)
 	top_row.add_child(right_spacer)
 
+	_content.add_child(_make_separator(16))
+
+	_content.add_child(_make_label("Field of View:", 26))
+	var fov_label := _make_label(_format_fov(int(round(base_fov))), 24, Color(0.85, 0.85, 0.85))
+	fov_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	fov_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_content.add_child(fov_label)
+	var fov_slider := HSlider.new()
+	fov_slider.min_value = 50.0
+	fov_slider.max_value = 120.0
+	fov_slider.step = 1.0
+	fov_slider.value = base_fov
+	fov_slider.custom_minimum_size = Vector2(380, 28)
+	_style_slider(fov_slider)
+	fov_slider.value_changed.connect(func(v: float):
+		base_fov = v
+		fov_label.text = _format_fov(int(round(base_fov)))
+		_save_all_settings()
+	)
+	_content.add_child(fov_slider)
+	_content.add_child(_make_separator(16))
+
+	_content.add_child(_make_label("GUI Scale:", 26))
+	var gs_opt := OptionButton.new()
+	_apply_font(gs_opt, 29)
+	gs_opt.custom_minimum_size = Vector2(380, 44)
+	for factor: float in GUI_SCALES:
+		var lbl: String
+		if factor == float(int(factor)):
+			lbl = "%dx" % int(factor)
+		else:
+			lbl = "%.1fx" % factor
+		gs_opt.add_item(lbl)
+	gs_opt.selected = maxi(0, GUI_SCALES.find(gui_scale))
+	_style_button(gs_opt)
+	gs_opt.item_selected.connect(func(idx: int):
+		gui_scale = GUI_SCALES[idx]
+		_apply_gui_scale()
+		_save_all_settings()
+	)
+	_content.add_child(gs_opt)
+
+	_content.add_child(_make_separator(24))
+
+	var btn_video := _make_button("Video Settings", 280)
+	btn_video.pressed.connect(func(): _show_screen(Screen.VIDEO))
+	_content.add_child(btn_video)
+	_content.add_child(_make_separator(6))
+
+	var btn_ctrl := _make_button("Controls", 280)
+	btn_ctrl.pressed.connect(func(): _show_screen(Screen.CONTROLS))
+	_content.add_child(btn_ctrl)
+
+	_content.add_child(_make_separator(20))
+	var back_row := HBoxContainer.new()
+	back_row.alignment = BoxContainer.ALIGNMENT_CENTER
+	_content.add_child(back_row)
+	var back := _make_button("Back", 140)
+	back.pressed.connect(func(): _show_screen(Screen.MAIN))
+	back_row.add_child(back)
+
+
+## Video sub-screen.
+func _build_video_settings() -> void:
+	_content.add_child(_make_title("Video Settings"))
 	_content.add_child(_make_separator(8))
 
 	var scroll := ScrollContainer.new()
-	scroll.custom_minimum_size = Vector2(400, 460)
+	scroll.custom_minimum_size = Vector2(400, 400)
 	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
 	scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_style_scroll_container(scroll)
 	_content.add_child(scroll)
-
 	var list := VBoxContainer.new()
 	list.add_theme_constant_override("separation", 8)
 	list.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	scroll.add_child(list)
 
-	# --- View Distance ---
 	list.add_child(_make_label("View Distance:", 26))
 	var vd_label := _make_label(_format_view_distance(view_distance), 24, Color(0.85, 0.85, 0.85))
 	vd_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
@@ -554,28 +616,72 @@ func _build_settings() -> void:
 	list.add_child(vd_slider)
 	list.add_child(_make_separator(16))
 
-	# --- FOV ---
-	list.add_child(_make_label("Field of View:", 26))
-	var fov_label := _make_label(_format_fov(int(round(base_fov))), 24, Color(0.85, 0.85, 0.85))
-	fov_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	fov_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	list.add_child(fov_label)
-	var fov_slider := HSlider.new()
-	fov_slider.min_value = 50.0
-	fov_slider.max_value = 120.0
-	fov_slider.step = 1.0
-	fov_slider.value = base_fov
-	fov_slider.custom_minimum_size = Vector2(380, 28)
-	_style_slider(fov_slider)
-	fov_slider.value_changed.connect(func(v: float):
-		base_fov = v
-		fov_label.text = _format_fov(int(round(base_fov)))
-		_save_all_settings()
-	)
-	list.add_child(fov_slider)
+	_add_checkbox(list, "Connected Textures", connected_textures, func(v: bool):
+		connected_textures = v; _save_all_settings())
+	_add_checkbox(list, "Mipmaps", mipmaps, func(v: bool):
+		mipmaps = v; _save_all_settings())
+
 	list.add_child(_make_separator(16))
 
-	# --- Mouse Sensitivity ---
+	list.add_child(_make_label("Aspect Ratio:", 26))
+	var ar_opt := OptionButton.new()
+	_apply_font(ar_opt, 29)
+	ar_opt.custom_minimum_size = Vector2(380, 44)
+	for n: String in ASPECT_RATIOS:
+		ar_opt.add_item(n)
+	ar_opt.selected = maxi(0, ASPECT_RATIOS.find(aspect_ratio))
+	_style_button(ar_opt)
+	ar_opt.item_selected.connect(func(idx: int):
+		aspect_ratio = ASPECT_RATIOS[idx]; _save_all_settings())
+	list.add_child(ar_opt)
+	list.add_child(_make_separator(16))
+
+	list.add_child(_make_label("Fullscreen:", 26))
+	var fs_opt := OptionButton.new()
+	_apply_font(fs_opt, 29)
+	fs_opt.custom_minimum_size = Vector2(380, 44)
+	for mode_name: String in PauseMenu.FULLSCREEN_MODES:
+		fs_opt.add_item(mode_name)
+	fs_opt.selected = maxi(0, PauseMenu.FULLSCREEN_MODES.find(fullscreen))
+	_style_button(fs_opt)
+	fs_opt.item_selected.connect(func(idx: int):
+		fullscreen = PauseMenu.FULLSCREEN_MODES[idx]
+		_apply_fullscreen()
+		_save_all_settings()
+	)
+	list.add_child(fs_opt)
+
+	_content.add_child(_make_separator(20))
+	var back_row := HBoxContainer.new()
+	back_row.alignment = BoxContainer.ALIGNMENT_CENTER
+	_content.add_child(back_row)
+	var back := _make_button("Back", 140)
+	back.pressed.connect(func(): _show_screen(Screen.SETTINGS))
+	back_row.add_child(back)
+
+
+# ======================================================================
+#  CONTROLS screen
+# ======================================================================
+
+var _rebinding_action: StringName = &""
+var _rebinding_button: Button = null
+
+func _build_controls() -> void:
+	_content.add_child(_make_title("Controls"))
+	_content.add_child(_make_separator(8))
+
+	var scroll := ScrollContainer.new()
+	scroll.custom_minimum_size = Vector2(400, 400)
+	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_style_scroll_container(scroll)
+	_content.add_child(scroll)
+	var list := VBoxContainer.new()
+	list.add_theme_constant_override("separation", 8)
+	list.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	scroll.add_child(list)
+
 	list.add_child(_make_label("Mouse Sensitivity:", 26))
 	var ms_label := _make_label(_format_sensitivity(mouse_sensitivity), 24, Color(0.85, 0.85, 0.85))
 	ms_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
@@ -596,17 +702,6 @@ func _build_settings() -> void:
 	list.add_child(ms_slider)
 	list.add_child(_make_separator(16))
 
-	# --- Checkboxes ---
-	_add_checkbox(list, "Connected Textures", connected_textures, func(v: bool):
-		connected_textures = v; _save_all_settings())
-	_add_checkbox(list, "Enable Flying", flying_enabled, func(v: bool):
-		flying_enabled = v; _save_all_settings())
-	_add_checkbox(list, "Mipmaps", mipmaps, func(v: bool):
-		mipmaps = v; _save_all_settings())
-
-	list.add_child(_make_separator(16))
-
-	# --- Sprint Mode ---
 	list.add_child(_make_label("Sprint Mode:", 26))
 	var sprint_opt := OptionButton.new()
 	_apply_font(sprint_opt, 29)
@@ -620,7 +715,6 @@ func _build_settings() -> void:
 	list.add_child(sprint_opt)
 	list.add_child(_make_separator(16))
 
-	# --- Crouch Mode ---
 	list.add_child(_make_label("Crouch Mode:", 26))
 	var crouch_opt := OptionButton.new()
 	_apply_font(crouch_opt, 29)
@@ -634,89 +728,12 @@ func _build_settings() -> void:
 	list.add_child(crouch_opt)
 	list.add_child(_make_separator(16))
 
-	# --- GUI Scale ---
-	list.add_child(_make_label("GUI Scale:", 26))
-	var gs_opt := OptionButton.new()
-	_apply_font(gs_opt, 29)
-	gs_opt.custom_minimum_size = Vector2(380, 44)
-	for factor: float in GUI_SCALES:
-		var lbl: String
-		if factor == float(int(factor)):
-			lbl = "%dx" % int(factor)
-		else:
-			lbl = "%.1fx" % factor
-		gs_opt.add_item(lbl)
-	gs_opt.selected = maxi(0, GUI_SCALES.find(gui_scale))
-	_style_button(gs_opt)
-	gs_opt.item_selected.connect(func(idx: int):
-		gui_scale = GUI_SCALES[idx]
-		_apply_gui_scale()
-		_save_all_settings()
-	)
-	list.add_child(gs_opt)
-	list.add_child(_make_separator(16))
+	_add_checkbox(list, "Enable Flying", flying_enabled, func(v: bool):
+		flying_enabled = v; _save_all_settings())
 
-	# --- Aspect Ratio ---
-	list.add_child(_make_label("Aspect Ratio:", 26))
-	var ar_opt := OptionButton.new()
-	_apply_font(ar_opt, 29)
-	ar_opt.custom_minimum_size = Vector2(380, 44)
-	for n: String in ASPECT_RATIOS:
-		ar_opt.add_item(n)
-	ar_opt.selected = maxi(0, ASPECT_RATIOS.find(aspect_ratio))
-	_style_button(ar_opt)
-	ar_opt.item_selected.connect(func(idx: int):
-		aspect_ratio = ASPECT_RATIOS[idx]; _save_all_settings())
-	list.add_child(ar_opt)
-	list.add_child(_make_separator(16))
-
-	# --- Fullscreen ---
-	list.add_child(_make_label("Fullscreen:", 26))
-	var fs_opt := OptionButton.new()
-	_apply_font(fs_opt, 29)
-	fs_opt.custom_minimum_size = Vector2(380, 44)
-	for mode_name: String in PauseMenu.FULLSCREEN_MODES:
-		fs_opt.add_item(mode_name)
-	fs_opt.selected = maxi(0, PauseMenu.FULLSCREEN_MODES.find(fullscreen))
-	_style_button(fs_opt)
-	fs_opt.item_selected.connect(func(idx: int):
-		fullscreen = PauseMenu.FULLSCREEN_MODES[idx]
-		_apply_fullscreen()
-		_save_all_settings()
-	)
-	list.add_child(fs_opt)
-
-	list.add_child(_make_separator(16))
-
-	# --- Controls ---
-	var controls_row := HBoxContainer.new()
-	controls_row.alignment = BoxContainer.ALIGNMENT_CENTER
-	list.add_child(controls_row)
-	var controls_btn := _make_button("Controls...", 280)
-	controls_btn.pressed.connect(func(): _show_screen(Screen.CONTROLS))
-	controls_row.add_child(controls_btn)
-
-	_content.add_child(_make_separator(20))
-	var back_row := HBoxContainer.new()
-	back_row.alignment = BoxContainer.ALIGNMENT_CENTER
-	_content.add_child(back_row)
-	var back := _make_button("Back", 140)
-	back.pressed.connect(func(): _show_screen(Screen.MAIN))
-	back_row.add_child(back)
-
-
-# ======================================================================
-#  CONTROLS screen
-# ======================================================================
-
-var _rebinding_action: StringName = &""
-var _rebinding_button: Button = null
-
-func _build_controls() -> void:
-	_content.add_child(_make_title("Controls"))
-	_content.add_child(_make_separator(8))
-	_content.add_child(_make_label("Click a binding to rebind. Esc cancels.", 22, Color(0.7, 0.7, 0.7)))
-	_content.add_child(_make_separator(8))
+	list.add_child(_make_separator(20))
+	list.add_child(_make_label("Key Bindings (click to rebind, Esc cancels):", 22, Color(0.7, 0.7, 0.7)))
+	list.add_child(_make_separator(4))
 
 	for entry: Array in ControlsConfig.ACTIONS:
 		var action: StringName = entry[0]
@@ -730,7 +747,7 @@ func _build_controls() -> void:
 		var btn := _make_button(ControlsConfig.keycode_to_string(code), 180)
 		btn.pressed.connect(_start_rebind.bind(action, btn))
 		row.add_child(btn)
-		_content.add_child(row)
+		list.add_child(row)
 
 	_content.add_child(_make_separator(16))
 	var back_row := HBoxContainer.new()

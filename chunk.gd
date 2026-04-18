@@ -65,6 +65,12 @@ enum Block {
 	NETHER_GOLD_ORE = 50,
 	NETHER_QUARTZ_ORE = 51,
 	NETHER_PORTAL = 52,
+	CRIMSON_NYLIUM = 53,
+	WARPED_NYLIUM = 54,
+	CRIMSON_STEM = 55,
+	WARPED_STEM = 56,
+	NETHER_WART_BLOCK = 57,
+	WARPED_WART_BLOCK = 58,
 }
 
 # Face direction constants
@@ -415,6 +421,17 @@ static func _tile_index(block_type: int, face_dir: int) -> float:
 		Block.NETHER_GOLD_ORE: return 52.0
 		Block.NETHER_QUARTZ_ORE: return 53.0
 		Block.NETHER_PORTAL: return 54.0
+		Block.CRIMSON_NYLIUM:
+			# top = fungus, sides = blended, bottom = netherrack
+			return 55.0 if face_dir == DIR_YP else (51.0 if face_dir == DIR_YN else 56.0)
+		Block.WARPED_NYLIUM:
+			return 57.0 if face_dir == DIR_YP else (51.0 if face_dir == DIR_YN else 58.0)
+		Block.CRIMSON_STEM:
+			return 60.0 if face_dir == DIR_YP or face_dir == DIR_YN else 59.0
+		Block.WARPED_STEM:
+			return 62.0 if face_dir == DIR_YP or face_dir == DIR_YN else 61.0
+		Block.NETHER_WART_BLOCK: return 63.0
+		Block.WARPED_WART_BLOCK: return 64.0
 		Block.WORLD_BEDROCK: return 13.0  # same texture as BEDROCK
 		Block.WATER: return 32.0
 	return 0.0

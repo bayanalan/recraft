@@ -2216,9 +2216,10 @@ func regenerate_nether(size: int, seed: int) -> void:
 	_place_nether_lava_pools(feature_rng)
 	# Caves
 	_carve_caves(feature_rng)
-	# Nether ores: gold and quartz replace netherrack.
 	_place_nether_ores(feature_rng)
-	# No trees, no flowers in the nether.
+	# Huge fungi in the crimson and warped forest biomes.
+	_place_nether_trees(feature_rng)
+	# No flowers in the nether.
 
 	generation_progress.emit(0.42, "Building meshes...")
 	await get_tree().process_frame
@@ -2246,6 +2247,24 @@ func regenerate_nether(size: int, seed: int) -> void:
 
 
 ## Nether column generation — same terrain shape but all netherrack.
+## Nether biome IDs.
+const NETHER_WASTES: int = 0
+const NETHER_CRIMSON: int = 1
+const NETHER_WARPED: int = 2
+
+
+## Sample nether biome from biome_noise. Uses large-scale chunks of noise
+## so biomes are continuous regions, not speckled. Roughly 40% wastes,
+## 30% crimson, 30% warped.
+func get_nether_biome(wx: int, wz: int) -> int:
+	var b: float = biome_noise.get_noise_2d(float(wx) * 0.5, float(wz) * 0.5)
+	if b < -0.15:
+		return NETHER_CRIMSON
+	elif b > 0.15:
+		return NETHER_WARPED
+	return NETHER_WASTES
+
+
 func _gen_nether_column(i: int) -> void:
 	var cx: int = i / world_size_chunks
 	var cz: int = i % world_size_chunks
@@ -2259,10 +2278,21 @@ func _gen_nether_column(i: int) -> void:
 			var wx: int = cx * CHUNK_SIZE + lx
 			var wz: int = cz * CHUNK_SIZE + lz
 			var height: int = get_terrain_height(wx, wz)
+			var biome: int = get_nether_biome(wx, wz)
+			# Surface block per biome: nylium in forests, netherrack in wastes.
+			var top_block: int = Chunk.Block.NETHERRACK
+			if biome == NETHER_CRIMSON:
+				top_block = Chunk.Block.CRIMSON_NYLIUM
+			elif biome == NETHER_WARPED:
+				top_block = Chunk.Block.WARPED_NYLIUM
 			(col[0] as Chunk).set_voxel(lx, 0, lz, Chunk.Block.WORLD_BEDROCK)
 			for wy: int in range(1, height + 1):
-				# All netherrack — no dirt/grass distinction.
-				(col[wy >> 4] as Chunk).set_voxel(lx, wy & 15, lz, Chunk.Block.NETHERRACK)
+				var block: int
+				if wy == height:
+					block = top_block
+				else:
+					block = Chunk.Block.NETHERRACK
+				(col[wy >> 4] as Chunk).set_voxel(lx, wy & 15, lz, block)
 
 
 ## Nether lava pools — more frequent than overworld water pools.
@@ -2368,6 +2398,81 @@ func _place_nether_ore_vein(cx: int, cy: int, cz: int, count: int, block: int, r
 		if chunk.voxels[idx] == Chunk.Block.NETHERRACK:
 			chunk.voxels[idx] = block
 			placed += 1
+
+
+## Place nether forest trees (huge fungi) where the surface is nylium.
+## Crimson and warped forests each get their corresponding tree type.
+## Trees are coarse-grid placed (every 5 blocks) with a 35% spawn chance.
+func _place_nether_trees(rng: RandomNumberGenerator) -> void:
+	const CELL: int = 5
+	for gx: int in range(2, world_size_blocks - 2, CELL):
+		for gz: int in range(2, world_size_blocks - 2, CELL):
+			if rng.randf() > 0.35:
+				continue
+			var wx: int = gx + rng.randi_range(0, CELL - 1)
+			var wz: int = gz + rng.randi_range(0, CELL - 1)
+			if wx < 2 or wx >= world_size_blocks - 2:
+				continue
+			if wz < 2 or wz >= world_size_blocks - 2:
+				continue
+			var gy: int = _find_surface_y(wx, wz)
+			if gy < 0 or gy + 8 >= world_size_blocks:
+				continue
+			var surf: int = get_voxel(wx, gy, wz)
+			var stem_block: int
+			var wart_block: int
+			if surf == Chunk.Block.CRIMSON_NYLIUM:
+				stem_block = Chunk.Block.CRIMSON_STEM
+				wart_block = Chunk.Block.NETHER_WART_BLOCK
+			elif surf == Chunk.Block.WARPED_NYLIUM:
+				stem_block = Chunk.Block.WARPED_STEM
+				wart_block = Chunk.Block.WARPED_WART_BLOCK
+			else:
+				continue
+			_place_nether_tree(wx, gy, wz, stem_block, wart_block, rng)
+
+
+## Build one nether "huge fungus" tree. A tall stem with an irregular wart
+## block canopy at the top — no crossed-quad foliage, just chunky organic
+## blobs like Minecraft's huge fungi.
+func _place_nether_tree(wx: int, gy: int, wz: int, stem_block: int, wart_block: int, rng: RandomNumberGenerator) -> void:
+	var trunk_h: int = rng.randi_range(4, 7)
+	var top: int = gy + trunk_h
+	if top + 2 >= world_size_blocks:
+		return
+	# Stem
+	for i: int in trunk_h:
+		_gen_set(wx, gy + 1 + i, wz, stem_block)
+	# Canopy: irregular blob of wart blocks at the top.
+	# Bottom canopy layer (top-2): 5×5 minus corners.
+	for dy: int in [-2, -1]:
+		var y: int = top + dy
+		for dx: int in range(-2, 3):
+			for dz: int in range(-2, 3):
+				# Skip center column (where stem already is).
+				if dx == 0 and dz == 0:
+					continue
+				# Trim corners often for organic shape.
+				if absi(dx) == 2 and absi(dz) == 2 and rng.randf() < 0.7:
+					continue
+				if absi(dx) + absi(dz) >= 3 and rng.randf() < 0.4:
+					continue
+				_gen_set_wart(wx + dx, y, wz + dz, wart_block)
+	# Top layer (top): 3×3 with trimmed corners.
+	for dx: int in range(-1, 2):
+		for dz: int in range(-1, 2):
+			if absi(dx) == 1 and absi(dz) == 1 and rng.randf() < 0.5:
+				continue
+			_gen_set_wart(wx + dx, top, wz + dz, wart_block)
+	# Cap — single wart block above stem top.
+	_gen_set_wart(wx, top + 1, wz, wart_block)
+
+
+## Only write a wart block if the cell is currently air — avoids clobbering
+## stems or other trees in nearby placements.
+func _gen_set_wart(wx: int, wy: int, wz: int, block: int) -> void:
+	if get_voxel(wx, wy, wz) == Chunk.Block.AIR:
+		_gen_set(wx, wy, wz, block)
 
 
 func regenerate(size: int, terrain_type: int, seed: int = 0) -> void:

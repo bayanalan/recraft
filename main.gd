@@ -31,7 +31,7 @@ var _overworld_portal_pos: Vector3 = Vector3.ZERO
 # _day_time goes from 0.0 to 1.0 continuously. 0.0 = dawn, 0.25 = noon,
 # 0.5 = dusk, 0.75 = midnight. Full cycle = 30 real minutes.
 const DAY_CYCLE_BASE_SECONDS: float = 30.0 * 60.0  # 1800s at tick rate 20
-var _day_time: float = 0.0   # start at dawn
+var _day_time: float = 0.25  # start at noon for new worlds
 # Game rules — toggled via chat commands.
 var do_daylight_cycle: bool = true
 var tick_rate: float = 20.0   # base=20; higher = faster day/night
