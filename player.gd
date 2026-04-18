@@ -1,6 +1,11 @@
 class_name Player
 extends CharacterBody3D
 
+## Fires whenever the player attempts a break (LMB) or place (RMB). Emitted
+## on the press edge even if the raycast misses, so the held-item swing
+## animation plays every click like Minecraft's hand wave.
+signal action_performed(kind: String)
+
 @onready var head: Node3D = $Head
 @onready var camera: Camera3D = $Head/Camera3D
 
@@ -204,6 +209,7 @@ func _physics_process(delta: float) -> void:
 			var ray_dir: Vector3 = -camera.global_basis.z
 			world.break_block(ray_origin, ray_dir)
 			_break_cooldown = ACTION_COOLDOWN
+			action_performed.emit("break")
 		if rmb and (rmb_edge or _place_cooldown <= 0.0):
 			var ray_origin: Vector3 = camera.global_position
 			var ray_dir: Vector3 = -camera.global_basis.z
@@ -211,6 +217,7 @@ func _physics_process(delta: float) -> void:
 			var block_type: int = hud.get_selected_block() if hud != null else Chunk.Block.STONE
 			world.place_block(ray_origin, ray_dir, block_type, player_aabb)
 			_place_cooldown = ACTION_COOLDOWN
+			action_performed.emit("place")
 	_lmb_held_last = lmb
 	_rmb_held_last = rmb
 

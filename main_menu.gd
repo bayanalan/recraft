@@ -65,6 +65,10 @@ func _ready() -> void:
 	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
 	_setup_font()
 	_load_settings()
+	# Load saved key bindings so the Controls screen reflects what the
+	# player actually rebound last session — otherwise the first main-menu
+	# visit after a rebind would still show the default (W/A/S/D/etc) keys.
+	ControlsConfig.load_into_inputmap()
 	_apply_fullscreen()
 	_apply_gui_scale()
 	_build_screen()
@@ -781,6 +785,11 @@ func _input(event: InputEvent) -> void:
 		if code == 0:
 			code = ek.keycode
 		ControlsConfig.set_action_key(_rebinding_action, code)
+		# Persist immediately so the rebind survives quitting the main menu,
+		# restarting the game, or picking a different world. Mirrors
+		# pause_menu.gd's rebind handler — previously missing here, which
+		# meant menu-side rebinds lived only in the in-memory InputMap.
+		ControlsConfig.save()
 		_rebinding_button.text = ControlsConfig.keycode_to_string(code)
 	_rebinding_action = &""
 	_rebinding_button = null

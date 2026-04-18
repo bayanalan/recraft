@@ -48,6 +48,8 @@ func _unhandled_input(event: InputEvent) -> void:
 		hotbar.visible = _hud_visible
 		water_overlay.visible = _hud_visible and water_overlay.visible
 		lava_overlay.visible = _hud_visible and lava_overlay.visible
+		if has_node("HeldItem"):
+			get_node("HeldItem").visible = _hud_visible
 		get_viewport().set_input_as_handled()
 		return
 

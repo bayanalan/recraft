@@ -1,10 +1,11 @@
-[gd_scene load_steps=6 format=3]
+[gd_scene load_steps=7 format=3]
 
 [ext_resource type="Script" path="res://hud.gd" id="1"]
 [ext_resource type="Script" path="res://crosshair.gd" id="2"]
 [ext_resource type="Script" path="res://hotbar_display.gd" id="3"]
 [ext_resource type="Script" path="res://block_select.gd" id="4"]
 [ext_resource type="Script" path="res://chat.gd" id="5"]
+[ext_resource type="Script" path="res://held_item.gd" id="6"]
 
 [node name="HUD" type="CanvasLayer"]
 script = ExtResource("1")
@@ -46,6 +47,15 @@ grow_horizontal = 2
 grow_vertical = 2
 mouse_filter = 2
 script = ExtResource("3")
+
+[node name="HeldItem" type="Control" parent="."]
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+mouse_filter = 2
+script = ExtResource("6")
 
 [node name="BlockSelect" type="Control" parent="."]
 anchors_preset = 15

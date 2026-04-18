@@ -56,6 +56,8 @@ func _ready() -> void:
 		var bs: Node = hud.get_node("BlockSelect")
 		if bs.has_signal("closed"):
 			bs.closed.connect(_on_block_select_closed)
+	if player != null and player.has_signal("action_performed"):
+		player.action_performed.connect(_on_player_action)
 	_setup_day_night()
 	_start_from_config()
 
@@ -473,6 +475,13 @@ func _get_all_shader_materials() -> Array[ShaderMaterial]:
 	var ps: ParticleSystem = get_node_or_null("ParticleSystem") as ParticleSystem
 	if ps != null and ps._mesh_material != null:
 		mats.append(ps._mesh_material)
+	# Include the held-item so its shader picks up the same day/night
+	# sky_light + ambient_light push that main does for the world.
+	var held: Node = _get_held_item()
+	if held != null and held.has_method("get_block_material"):
+		var hm: ShaderMaterial = held.get_block_material()
+		if hm != null:
+			mats.append(hm)
 	return mats
 
 
@@ -670,6 +679,26 @@ func _on_mipmaps_changed(enabled: bool) -> void:
 	var ps: ParticleSystem = get_node_or_null("ParticleSystem") as ParticleSystem
 	if ps != null:
 		ps.refresh_atlas()
+	var held: Node = _get_held_item()
+	if held != null and held.has_method("refresh_atlas"):
+		held.refresh_atlas()
+
+
+## Returns the HUD's HeldItem node, or null if it hasn't been wired yet.
+## Kept as a lookup rather than a cached ref so scene reloads (e.g. when
+## returning from the main menu) don't leave a stale pointer.
+func _get_held_item() -> Node:
+	if hud == null:
+		return null
+	return hud.get_node_or_null("HeldItem")
+
+
+## Forward the player's break/place events to the held-item display so it
+## can play the rotate-forward swing.
+func _on_player_action(_kind: String) -> void:
+	var held: Node = _get_held_item()
+	if held != null and held.has_method("swing"):
+		held.swing()
 
 
 
