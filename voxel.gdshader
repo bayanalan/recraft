@@ -26,10 +26,13 @@ uniform vec3 fog_color : source_color = vec3(0.53, 0.76, 0.98);
 uniform vec3 sky_light = vec3(0.32, 0.30, 0.26);
 uniform vec3 ambient_light = vec3(0.20, 0.22, 0.28);
 
-// Block point lights — up to 64 nearby emitters pushed by main.gd each
-// frame. xyz = world position, w = light level (0-16). Warm orange tint.
+// Block point lights — xyz = world position, w = light level (0-16),
+// packed 4 floats per texel in a 1-row RGBA-float texture. Using a sampler
+// instead of a fixed-size uniform array removes the slot cap entirely:
+// main.gd grows the texture as needed, and the fragment loop just iterates
+// `block_light_count` regardless of how many emitters the world holds.
 uniform int block_light_count = 0;
-uniform vec4 block_lights[64];
+uniform sampler2D lights_tex : filter_nearest, repeat_disable;
 const float ATLAS_TILES = 70.0;
 const float GLASS_TILE = 8.0;
 const float BARRIER_TILE = 47.0;
@@ -122,8 +125,9 @@ void fragment() {
 	// to avoid overlapping torches producing washed-out white.
 	float block_glow = 0.0;
 	for (int i = 0; i < block_light_count; i++) {
-		vec3 lpos = block_lights[i].xyz;
-		float level = block_lights[i].w;
+		vec4 l = texelFetch(lights_tex, ivec2(i, 0), 0);
+		vec3 lpos = l.xyz;
+		float level = l.w;
 		float dist = length(world_pos - lpos);
 		float radius = level;  // light level = reach in blocks
 		float atten = max(0.0, 1.0 - dist / radius);

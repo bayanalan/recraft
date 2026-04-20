@@ -425,22 +425,43 @@ func _update_day_night(delta: float) -> void:
 	_push_block_lights()
 
 
+## Persistent 1-row RGBA-float texture holding every in-range light emitter.
+## `_lights_capacity` tracks the texture's width in pixels; it grows (doubles)
+## whenever more emitters come into range than fit, and never shrinks. Using
+## a sampler instead of a fixed-size uniform array means there's no cap on
+## simultaneous lights — the shader loop is bounded only by `block_light_count`
+## (itself bounded by view-distance culling).
+var _lights_texture: ImageTexture = null
+var _lights_capacity: int = 0
+
+
+func _ensure_lights_capacity(n: int) -> void:
+	if _lights_texture != null and n <= _lights_capacity:
+		return
+	var new_cap: int = _lights_capacity
+	if new_cap <= 0:
+		new_cap = 64
+	while new_cap < n:
+		new_cap *= 2
+	var zeros := PackedFloat32Array()
+	zeros.resize(new_cap * 4)  # RGBAF = 4 floats per pixel
+	var img := Image.create_from_data(new_cap, 1, false, Image.FORMAT_RGBAF, zeros.to_byte_array())
+	_lights_texture = ImageTexture.create_from_image(img)
+	_lights_capacity = new_cap
+
+
 func _push_block_lights() -> void:
 	if world == null or not is_instance_valid(player):
 		return
 	var cam_pos: Vector3 = player.global_position
-	const MAX_LIGHTS: int = 64
-	# An emitter can affect any pixel within `level` blocks of itself. A pixel
-	# is visible out to the user's configured view distance. So the emitter is
-	# relevant iff the player is within (view_distance + level) of it —
-	# anything farther has its entire glow fogged to the sky color anyway.
-	# The old 16-block cap made torches "turn off" as soon as the player
-	# walked ~32 blocks away, even though the torch itself was still on screen.
+	# Pure physical filter: any emitter whose `level`-radius halo could reach
+	# a visible fragment (within view_distance of the player) is relevant.
+	# Everything else would be fogged to the sky color anyway.
 	var view_r: float = 256.0
 	if pause_menu != null:
 		view_r = float(pause_menu.view_distance)
-	# Collect nearby emitters sorted by distance.
-	var nearby: Array = []  # [dist_sq, Vector3i, level]
+	var positions: Array[Vector3] = []
+	var levels: Array[int] = []
 	for pos: Vector3i in world.light_emitters:
 		var wpos := Vector3(pos.x + 0.5, pos.y + 0.5, pos.z + 0.5)
 		var d2: float = cam_pos.distance_squared_to(wpos)
@@ -448,22 +469,26 @@ func _push_block_lights() -> void:
 		var max_r: float = view_r + float(lvl)
 		if d2 > max_r * max_r:
 			continue
-		nearby.append([d2, pos, lvl])
-	# Sort by distance (closest first) and take up to MAX_LIGHTS.
-	nearby.sort_custom(func(a: Array, b: Array) -> bool: return a[0] < b[0])
-	var count: int = mini(nearby.size(), MAX_LIGHTS)
-	var light_data: Array = []
+		positions.append(wpos)
+		levels.append(lvl)
+	var count: int = positions.size()
+	# Pack into a float buffer sized to the full texture so the update
+	# matches the texture's dimensions. Unused slots stay zero — the shader
+	# only reads the first `count` texels via `block_light_count`.
+	_ensure_lights_capacity(maxi(1, count))
+	var data := PackedFloat32Array()
+	data.resize(_lights_capacity * 4)
 	for i: int in count:
-		var pos: Vector3i = nearby[i][1]
-		var lvl: int = nearby[i][2]
-		light_data.append(Plane(float(pos.x) + 0.5, float(pos.y) + 0.5, float(pos.z) + 0.5, float(lvl)))
-	# Pad remainder with zero-range lights so the shader loop is safe.
-	while light_data.size() < MAX_LIGHTS:
-		light_data.append(Plane(0, 0, 0, 0))
-	# Push to both voxel and water shaders.
+		var p: Vector3 = positions[i]
+		data[i * 4 + 0] = p.x
+		data[i * 4 + 1] = p.y
+		data[i * 4 + 2] = p.z
+		data[i * 4 + 3] = float(levels[i])
+	var img := Image.create_from_data(_lights_capacity, 1, false, Image.FORMAT_RGBAF, data.to_byte_array())
+	_lights_texture.update(img)
 	for mat: ShaderMaterial in _get_all_shader_materials():
 		mat.set_shader_parameter("block_light_count", count)
-		mat.set_shader_parameter("block_lights", light_data)
+		mat.set_shader_parameter("lights_tex", _lights_texture)
 
 
 func _get_all_shader_materials() -> Array[ShaderMaterial]:

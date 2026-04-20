@@ -9,8 +9,11 @@ render_mode unshaded, cull_disabled, blend_mix, depth_draw_opaque;
 
 uniform vec3 sky_light = vec3(0.32, 0.30, 0.26);
 uniform vec3 ambient_light = vec3(0.20, 0.22, 0.28);
+// Block-emitter lights packed as a 1-row RGBA-float texture, same as
+// voxel.gdshader. No fixed slot cap — main.gd grows the texture as more
+// emitters come into view.
 uniform int block_light_count = 0;
-uniform vec4 block_lights[64];
+uniform sampler2D lights_tex : filter_nearest, repeat_disable;
 const float PIXELS_PER_UNIT = 16.0;  // matches the 16-texel block resolution
 // Same distance-fog uniforms as voxel.gdshader so water blocks fade with the
 // terrain instead of staying vivid past the render distance.
@@ -97,8 +100,9 @@ void fragment() {
 	vec3 light = ambient_light + sky_light;
 	float block_glow = 0.0;
 	for (int i = 0; i < block_light_count; i++) {
-		vec3 lpos = block_lights[i].xyz;
-		float level = block_lights[i].w;
+		vec4 l = texelFetch(lights_tex, ivec2(i, 0), 0);
+		vec3 lpos = l.xyz;
+		float level = l.w;
 		float dist = length(world_pos - lpos);
 		float atten = max(0.0, 1.0 - dist / level);
 		block_glow = max(block_glow, atten);

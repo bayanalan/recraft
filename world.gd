@@ -62,9 +62,9 @@ var light_emitters: Dictionary = {}
 ## Returns the light level a block emits, or 0 if it doesn't emit.
 static func get_block_light_level(block: int) -> int:
 	match block:
-		Chunk.Block.TORCH: return 16
-		Chunk.Block.FIRE: return 12
-		Chunk.Block.LAVA: return 12
+		Chunk.Block.TORCH: return 12
+		Chunk.Block.FIRE: return 10
+		Chunk.Block.LAVA: return 10
 		Chunk.Block.NETHER_PORTAL: return 11
 	return 0
 var _bounds_body: StaticBody3D = null
