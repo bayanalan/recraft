@@ -5,6 +5,7 @@ extends CharacterBody3D
 ## on the press edge even if the raycast misses, so the held-item swing
 ## animation plays every click like Minecraft's hand wave.
 signal action_performed(kind: String)
+signal interacted_with_block(block_type: int, position: Vector3i)
 
 @onready var head: Node3D = $Head
 @onready var camera: Camera3D = $Head/Camera3D
@@ -101,6 +102,15 @@ const STEP_SMOOTH_RATE: float = 14.0  # higher = snappier recovery
 var _step_head_offset: float = 0.0
 var _head_base_y: float = 0.0
 
+# Health and fall damage
+var health: int = 20
+var max_health: int = 20
+var _fall_start_y: float = 0.0
+var _was_on_floor: bool = true  # assume on floor at spawn to avoid bogus landing
+var _damage_tilt: float = 0.0
+var _damage_tilt_vel: float = 0.0
+var invincible_timer: float = 0.0
+
 
 func _ready() -> void:
 	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
@@ -109,6 +119,7 @@ func _ready() -> void:
 	block_outline = get_parent().get_node_or_null("BlockOutline") as BlockOutline
 	_head_base_y = head.position.y
 	camera.fov = base_fov
+	_fall_start_y = global_position.y
 
 
 ## Apply a slider value (1-200) from the settings screen. 100 = normal
@@ -207,17 +218,28 @@ func _physics_process(delta: float) -> void:
 		if lmb and (lmb_edge or _break_cooldown <= 0.0):
 			var ray_origin: Vector3 = camera.global_position
 			var ray_dir: Vector3 = -camera.global_basis.z
-			world.break_block(ray_origin, ray_dir)
+			var result: Dictionary = world.break_block(ray_origin, ray_dir)
+			if result.get("hit", false) and hud != null:
+				for drop: Array in result.get("drops", []):
+					if drop.size() >= 2:
+						hud.give_item(drop[0], drop[1])
 			_break_cooldown = ACTION_COOLDOWN
 			action_performed.emit("break")
 		if rmb and (rmb_edge or _place_cooldown <= 0.0):
 			var ray_origin: Vector3 = camera.global_position
 			var ray_dir: Vector3 = -camera.global_basis.z
-			var player_aabb := _get_player_aabb()
-			var block_type: int = hud.get_selected_block() if hud != null else Chunk.Block.STONE
-			world.place_block(ray_origin, ray_dir, block_type, player_aabb)
-			_place_cooldown = ACTION_COOLDOWN
-			action_performed.emit("place")
+			# Check for interactable blocks first
+			var interact: Dictionary = world.get_interactable_block(ray_origin, ray_dir)
+			if not interact.is_empty():
+				if rmb_edge:
+					interacted_with_block.emit(interact["block"], interact["position"])
+					_place_cooldown = ACTION_COOLDOWN
+			else:
+				var player_aabb := _get_player_aabb()
+				var block_type: int = hud.get_selected_block() if hud != null else Chunk.Block.STONE
+				world.place_block(ray_origin, ray_dir, block_type, player_aabb)
+				_place_cooldown = ACTION_COOLDOWN
+				action_performed.emit("place")
 	_lmb_held_last = lmb
 	_rmb_held_last = rmb
 
@@ -355,6 +377,36 @@ func _physics_process(delta: float) -> void:
 	var target_fov: float = base_fov * SPRINT_FOV_MULT if is_sprinting else base_fov
 	if not is_equal_approx(camera.fov, target_fov):
 		camera.fov = lerpf(camera.fov, target_fov, 1.0 - exp(-FOV_LERP_RATE * delta))
+
+	# Track fall start for fall damage
+	var currently_on_floor: bool = is_on_floor()
+	if currently_on_floor and not _was_on_floor and not is_flying:
+		# Just landed — calculate fall distance
+		var fall_dist: float = _fall_start_y - global_position.y
+		if fall_dist > 3.0:
+			var damage: int = int(floor(fall_dist - 3.0)) * 2
+			if damage > 0:
+				take_damage(damage)
+	if not currently_on_floor and not is_flying:
+		if _was_on_floor:
+			_fall_start_y = global_position.y
+	_was_on_floor = currently_on_floor
+
+	# Invincibility timer
+	if invincible_timer > 0.0:
+		invincible_timer = maxf(0.0, invincible_timer - delta)
+
+	# Damage tilt spring
+	if not is_equal_approx(_damage_tilt, 0.0) or not is_equal_approx(_damage_tilt_vel, 0.0):
+		_damage_tilt_vel -= _damage_tilt * 15.0 * delta
+		_damage_tilt_vel *= 1.0 - 8.0 * delta
+		_damage_tilt += _damage_tilt_vel * delta
+		if absf(_damage_tilt) < 0.05 and absf(_damage_tilt_vel) < 0.05:
+			_damage_tilt = 0.0
+			_damage_tilt_vel = 0.0
+		camera.rotation.z = deg_to_rad(_damage_tilt)
+	elif camera.rotation.z != 0.0:
+		camera.rotation.z = 0.0
 
 	move_and_slide()
 
@@ -511,3 +563,33 @@ func _voxel_at(x: float, y: float, z: float) -> int:
 	if world == null:
 		return 0
 	return world.get_voxel(int(floor(x)), int(floor(y)), int(floor(z)))
+
+
+func take_damage(amount: int) -> void:
+	if invincible_timer > 0.0:
+		return
+	var armor_reduction: float = 0.0
+	if hud != null and hud.has_method("get_armor_value"):
+		var av: int = hud.get_armor_value()
+		armor_reduction = clampf(float(av) * 0.04, 0.0, 0.80)
+	var actual: int = int(ceil(float(amount) * (1.0 - armor_reduction)))
+	actual = maxi(1, actual)
+	health = maxi(0, health - actual)
+	invincible_timer = 0.5
+	_damage_tilt_vel = 25.0 * (1.0 if randi() % 2 == 0 else -1.0)
+	if hud != null and hud.has_method("update_health"):
+		hud.update_health(health)
+	if health <= 0:
+		_on_death()
+
+
+func _on_death() -> void:
+	health = 20
+	if world != null:
+		global_position = world.find_spawn_position()
+	velocity = Vector3.ZERO
+	_damage_tilt = 0.0
+	_damage_tilt_vel = 0.0
+	camera.rotation.z = 0.0
+	if hud != null and hud.has_method("update_health"):
+		hud.update_health(health)

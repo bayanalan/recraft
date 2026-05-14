@@ -1,4 +1,4 @@
-[gd_scene load_steps=7 format=3]
+[gd_scene load_steps=11 format=3]
 
 [ext_resource type="Script" path="res://hud.gd" id="1"]
 [ext_resource type="Script" path="res://crosshair.gd" id="2"]
@@ -6,6 +6,10 @@
 [ext_resource type="Script" path="res://block_select.gd" id="4"]
 [ext_resource type="Script" path="res://chat.gd" id="5"]
 [ext_resource type="Script" path="res://held_item.gd" id="6"]
+[ext_resource type="Script" path="res://health_display.gd" id="7"]
+[ext_resource type="Script" path="res://inventory_ui.gd" id="8"]
+[ext_resource type="Script" path="res://crafting_table_ui.gd" id="9"]
+[ext_resource type="Script" path="res://furnace_ui.gd" id="10"]
 
 [node name="HUD" type="CanvasLayer"]
 script = ExtResource("1")
@@ -73,3 +77,39 @@ grow_horizontal = 2
 grow_vertical = 2
 mouse_filter = 2
 script = ExtResource("5")
+
+[node name="HealthDisplay" type="Control" parent="."]
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+mouse_filter = 2
+script = ExtResource("7")
+
+[node name="InventoryUI" type="Control" parent="."]
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+visible = false
+script = ExtResource("8")
+
+[node name="CraftingTableUI" type="Control" parent="."]
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+visible = false
+script = ExtResource("9")
+
+[node name="FurnaceUI" type="Control" parent="."]
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+visible = false
+script = ExtResource("10")

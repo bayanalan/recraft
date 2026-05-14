@@ -3,7 +3,7 @@ class_name BlockIcon
 # Shared helper for drawing a block as an isometric 3D icon.
 # Used by both the hotbar and the block select (inventory) screen.
 
-const ATLAS_TILES: float = 70.0
+const ATLAS_TILES: float = 72.0
 const CUBE_H: float = 1.2
 
 # Face tints approximate the ratio between top/side faces under the world's
@@ -81,6 +81,8 @@ static func get_tiles(block_type: int) -> Vector2i:
 		Chunk.Block.CRIMSON_FUNGUS: return Vector2i(67, 67)
 		Chunk.Block.WARPED_FUNGUS: return Vector2i(68, 68)
 		Chunk.Block.DIAMOND_BLOCK: return Vector2i(69, 69)
+		Chunk.Block.FURNACE: return Vector2i(0, 70)
+		Chunk.Block.CRAFTING_TABLE: return Vector2i(71, 4)
 	return Vector2i(0, 0)
 
 
@@ -148,6 +150,8 @@ static func get_block_name(block_type: int) -> String:
 		Chunk.Block.CRIMSON_FUNGUS: return "Crimson Fungus"
 		Chunk.Block.WARPED_FUNGUS: return "Warped Fungus"
 		Chunk.Block.DIAMOND_BLOCK: return "Diamond Block"
+		Chunk.Block.FURNACE: return "Furnace"
+		Chunk.Block.CRAFTING_TABLE: return "Crafting Table"
 	return "Unknown"
 
 

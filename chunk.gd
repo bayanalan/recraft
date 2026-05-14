@@ -81,6 +81,9 @@ enum Block {
 	# Refined gemstone block — polished cyan diamond, matches the iron/gold
 	# family. Its atlas tile sits at the end of the atlas (69).
 	DIAMOND_BLOCK = 63,
+	# Survival mode functional blocks.
+	FURNACE = 64,
+	CRAFTING_TABLE = 65,
 }
 
 # Face direction constants
@@ -447,6 +450,10 @@ static func _tile_index(block_type: int, face_dir: int) -> float:
 		Block.CRIMSON_FUNGUS: return 67.0
 		Block.WARPED_FUNGUS: return 68.0
 		Block.DIAMOND_BLOCK: return 69.0
+		Block.FURNACE:
+			return 70.0 if face_dir == DIR_ZN or face_dir == DIR_ZP or face_dir == DIR_XP or face_dir == DIR_XN else 0.0
+		Block.CRAFTING_TABLE:
+			return 71.0 if face_dir == DIR_YP else 4.0
 		Block.WORLD_BEDROCK: return 13.0  # same texture as BEDROCK
 		Block.WATER: return 32.0
 	return 0.0

@@ -58,6 +58,8 @@ func _ready() -> void:
 			bs.closed.connect(_on_block_select_closed)
 	if player != null and player.has_signal("action_performed"):
 		player.action_performed.connect(_on_player_action)
+	if player != null and player.has_signal("interacted_with_block"):
+		player.interacted_with_block.connect(_on_player_interact)
 	_setup_day_night()
 	_start_from_config()
 
@@ -726,6 +728,16 @@ func _on_player_action(_kind: String) -> void:
 		held.swing()
 
 
+func _on_player_interact(block_type: int, position: Vector3i) -> void:
+	if hud == null:
+		return
+	match block_type:
+		Chunk.Block.FURNACE:
+			hud.open_furnace(position)
+		Chunk.Block.CRAFTING_TABLE:
+			hud.open_crafting_table()
+
+
 
 
 ## Auto-pause the game whenever the OS-level application focus leaves the
@@ -752,8 +764,14 @@ func _unhandled_input(event: InputEvent) -> void:
 			_pause_game()
 			get_viewport().set_input_as_handled()
 
-	# E opens the block inventory (only while game is active)
+	# E opens the survival inventory (only while game is active)
 	if event is InputEventKey and event.pressed and event.keycode == KEY_E:
+		if not get_tree().paused and hud != null:
+			hud.open_inventory()
+			get_viewport().set_input_as_handled()
+
+	# C opens the creative block select
+	if event is InputEventKey and event.pressed and event.keycode == KEY_C:
 		if not get_tree().paused and hud != null:
 			hud.open_block_select()
 			get_viewport().set_input_as_handled()

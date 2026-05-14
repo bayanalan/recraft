@@ -385,14 +385,14 @@ func raycast_hit(result: Dictionary) -> bool:
 	return result.get("hit", false)
 
 
-func break_block(origin: Vector3, direction: Vector3) -> bool:
+func break_block(origin: Vector3, direction: Vector3) -> Dictionary:
 	var hit: Dictionary = raycast_voxel(origin, direction)
 	if not hit.get("hit", false):
-		return false
+		return {"hit": false, "drops": []}
 	var block: int = hit["block"]
 	# Unbreakable blocks.
 	if block == Chunk.Block.WORLD_BEDROCK or block == Chunk.Block.NETHER_PORTAL:
-		return false
+		return {"hit": false, "drops": []}
 	var pos: Vector3i = hit["position"]
 	if particle_system != null:
 		particle_system.spawn_break_burst(Vector3(pos) + Vector3(0.5, 0.5, 0.5), block)
@@ -426,7 +426,33 @@ func break_block(origin: Vector3, direction: Vector3) -> bool:
 				_water_pending.append(np)
 			else:
 				_lava_pending.append(np)
-	return true
+	var drops: Array = _get_block_drops(block)
+	return {"hit": true, "drops": drops, "position": pos, "block": block}
+
+
+func _get_block_drops(block: int) -> Array:
+	match block:
+		Chunk.Block.COAL_ORE:    return [[Items.COAL, 1]]
+		Chunk.Block.IRON_ORE:    return [[Items.RAW_IRON, 1]]
+		Chunk.Block.GOLD_ORE:    return [[Items.RAW_GOLD, 1]]
+		Chunk.Block.DIAMOND_ORE: return [[Items.DIAMOND, 1]]
+		Chunk.Block.STONE:       return [[Chunk.Block.COBBLESTONE, 1]]
+		Chunk.Block.GRASS:       return [[Chunk.Block.DIRT, 1]]
+		Chunk.Block.LEAVES:      return []
+		Chunk.Block.NETHER_GOLD_ORE:   return [[Items.GOLD_INGOT, randi_range(2, 5)]]
+		Chunk.Block.NETHER_QUARTZ_ORE: return [[Items.QUARTZ, 1]]
+	return [[block, 1]]
+
+
+## Check if a block at the given raycast position is interactable (furnace/crafting table).
+func get_interactable_block(origin: Vector3, direction: Vector3) -> Dictionary:
+	var hit: Dictionary = raycast_voxel(origin, direction)
+	if not hit.get("hit", false):
+		return {}
+	var block: int = hit["block"]
+	if block == Chunk.Block.FURNACE or block == Chunk.Block.CRAFTING_TABLE:
+		return {"block": block, "position": hit["position"]}
+	return {}
 
 
 func place_block(origin: Vector3, direction: Vector3, block_type: int, player_aabb: AABB) -> bool:

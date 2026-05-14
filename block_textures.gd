@@ -1,7 +1,7 @@
 class_name BlockTextures
 
 const TILE_SIZE: int = 16
-const TILE_COUNT: int = 70
+const TILE_COUNT: int = 72
 # Atlas layout (left to right):
 # 0  stone            1  cobblestone       2  brick
 # 3  dirt             4  planks            5  log_side
@@ -141,6 +141,9 @@ static func create_atlas() -> ImageTexture:
 	_draw_warped_fungus(img, rng, 68)
 	# Gem block — polished diamond, matches the iron/gold family style.
 	_draw_diamond_block(img, rng, 69)
+	# Survival functional blocks.
+	_draw_furnace_front(img, rng, 70)
+	_draw_crafting_table_top(img, rng, 71)
 
 	# World saturation lift — applied before mipmaps so downsampled levels
 	# inherit the boosted palette. Adaptive, so stone-gray pixels don't
@@ -1852,6 +1855,70 @@ static func _draw_smooth_stone(img: Image, rng: RandomNumberGenerator, t: int) -
 					clampf(base.r + jitter, 0.0, 1.0),
 					clampf(base.g + jitter, 0.0, 1.0),
 					clampf(base.b + jitter, 0.0, 1.0)))
+
+
+## Furnace front — stone background with an orange fire-window rectangle
+## centered in the face. The fire-window has an orange/red gradient glow.
+static func _draw_furnace_front(img: Image, _rng: RandomNumberGenerator, t: int) -> void:
+	# Stone background
+	for y: int in TILE_SIZE:
+		for x: int in TILE_SIZE:
+			var shade: float = 0.72 + (((x ^ y) & 3) / 3.0) * 0.12
+			_px(img, t, x, y, Color(shade, shade, shade))
+	# Border edge detail (lighter top, darker right)
+	for i: int in TILE_SIZE:
+		_px(img, t, i, 0, Color(0.88, 0.88, 0.88))
+		_px(img, t, i, TILE_SIZE - 1, Color(0.50, 0.50, 0.50))
+		_px(img, t, 0, i, Color(0.88, 0.88, 0.88))
+		_px(img, t, TILE_SIZE - 1, i, Color(0.50, 0.50, 0.50))
+	# Fire window: 3 wide x 4 tall, centered
+	var wx: int = 7
+	var wy: int = 6
+	var ww: int = 3
+	var wh: int = 5
+	for dy: int in wh:
+		for dx: int in ww:
+			var px: int = wx + dx
+			var py: int = wy + dy
+			var t_val: float = float(dy) / float(wh - 1)
+			var r: float = lerpf(1.0, 0.75, t_val)
+			var g: float = lerpf(0.62, 0.20, t_val)
+			var b: float = 0.0
+			_px(img, t, px, py, Color(r, g, b))
+	# Bright core pixel
+	_px(img, t, wx + 1, wy + 1, Color(1.0, 0.90, 0.40))
+	# Dark frame around window
+	for dx: int in range(wx - 1, wx + ww + 1):
+		_px(img, t, dx, wy - 1, Color(0.25, 0.25, 0.25))
+		_px(img, t, dx, wy + wh, Color(0.25, 0.25, 0.25))
+	for dy: int in range(wy - 1, wy + wh + 1):
+		_px(img, t, wx - 1, dy, Color(0.25, 0.25, 0.25))
+		_px(img, t, wx + ww, dy, Color(0.25, 0.25, 0.25))
+
+
+## Crafting table top — oak planks base with a 2x2 darker cross-grid pattern
+## indicating a crafting surface.
+static func _draw_crafting_table_top(img: Image, _rng: RandomNumberGenerator, t: int) -> void:
+	# Oak planks base (warm tan/beige)
+	for y: int in TILE_SIZE:
+		for x: int in TILE_SIZE:
+			var shade: float = 0.75 + (((x * 3 + y) & 3) / 3.0) * 0.10
+			_px(img, t, x, y, Color(0.82 * shade, 0.68 * shade, 0.42 * shade))
+	# Plank grain lines
+	for y: int in [5, 10]:
+		for x: int in TILE_SIZE:
+			_px(img, t, x, y, Color(0.52, 0.40, 0.22))
+	# 2x2 cross-grid pattern (darker lines)
+	for x: int in [7, 8]:
+		for y: int in TILE_SIZE:
+			if y != 5 and y != 10:
+				_px(img, t, x, y, Color(0.50, 0.38, 0.20))
+	# Corner cross marks
+	var marks: Array[Vector2i] = [Vector2i(3, 2), Vector2i(11, 2), Vector2i(3, 12), Vector2i(11, 12)]
+	for m: Vector2i in marks:
+		_px(img, t, m.x, m.y, Color(0.35, 0.25, 0.12))
+		_px(img, t, m.x + 1, m.y, Color(0.35, 0.25, 0.12))
+		_px(img, t, m.x, m.y + 1, Color(0.35, 0.25, 0.12))
 
 
 static func _draw_barrier(img: Image, rng: RandomNumberGenerator, t: int) -> void:

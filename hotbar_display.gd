@@ -60,12 +60,21 @@ func _draw() -> void:
 			draw_rect(Rect2(sx + SLOT_SIZE - 1, sy, 1, SLOT_SIZE), SLOT_DIVIDER)
 
 		# 3D isometric textured block — shared helper.
-		# Centering: block extends from (cy - s/2) to (cy + s/2 + s*CUBE_H).
-		# Geometric center = cy + s*CUBE_H/2, so for slot-centered:
-		#   cy = slot_center - s*CUBE_H/2
 		var cx: float = sx + SLOT_SIZE * 0.5
 		var cy: float = sy + SLOT_SIZE * 0.5 - BLOCK_S * BlockIcon.CUBE_H * 0.5
-		BlockIcon.draw_iso(self, _atlas, cx, cy, BLOCK_S, slots[i])
+		var slot_id: int = slots[i]
+		if slot_id != 0:
+			if Items.is_item(slot_id):
+				Items.draw_item_icon(self, cx, cy + BLOCK_S * BlockIcon.CUBE_H * 0.5, BLOCK_S * 2.0, slot_id)
+			else:
+				BlockIcon.draw_iso(self, _atlas, cx, cy, BLOCK_S, slot_id)
+		# Count label (for stackable items > 1)
+		var hud_node: Node = get_parent()
+		if hud_node != null and "inventory" in hud_node:
+			var inv: Inventory = hud_node.inventory
+			if inv != null and i < inv.counts.size() and inv.counts[i] > 1:
+				draw_string(ThemeDB.fallback_font, Vector2(sx + SLOT_SIZE - 18, sy + SLOT_SIZE - 6),
+					str(inv.counts[i]), HORIZONTAL_ALIGNMENT_LEFT, -1, PauseMenu._fs(16), Color(1, 1, 1))
 
 		# Selection highlight
 		if i == selected:
