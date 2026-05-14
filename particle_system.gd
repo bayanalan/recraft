@@ -15,7 +15,7 @@ extends MultiMeshInstance3D
 const MAX_PARTICLES: int = 384
 const BURST_COUNT: int = 8
 const PARTICLE_SIZE: float = 0.12
-const GRAVITY: float = 14.0
+const GRAVITY: float = 26.0
 const LIFETIME: float = 0.9
 const FADE_FRAC: float = 0.35  # last 35% of life fades out
 const DRAG: float = 0.6

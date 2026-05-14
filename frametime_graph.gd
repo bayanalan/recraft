@@ -9,7 +9,11 @@ const LINE_16MS := Color(1, 1, 1, 0.2)
 
 
 func _draw() -> void:
-	var overlay: Control = get_parent()
+	var overlay: Node = get_parent()
+	while overlay != null and not "frame_times" in overlay:
+		overlay = overlay.get_parent()
+	if overlay == null:
+		return
 	var frame_times: PackedFloat32Array = overlay.frame_times
 	var count: int = overlay.HISTORY_SIZE if overlay.filled else overlay.write_idx
 	if count == 0:
