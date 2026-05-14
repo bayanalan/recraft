@@ -239,18 +239,18 @@ func _get_hover_item_name() -> String:
 		return ""
 	if _hover_slot >= _hotbar_slot_index(0) and _hover_slot < _hotbar_slot_index(0) + 9:
 		var i: int = _hover_slot - _hotbar_slot_index(0)
-		return Items.get_name(inv.ids[i]) if inv.ids[i] != 0 else ""
+		return Items.get_item_name(inv.ids[i]) if inv.ids[i] != 0 else ""
 	if _hover_slot >= _storage_slot_index(0) and _hover_slot < _storage_slot_index(0) + 27:
 		var i: int = _hover_slot - _storage_slot_index(0)
-		return Items.get_name(inv.ids[Inventory.HOTBAR_SIZE + i]) if inv.ids[Inventory.HOTBAR_SIZE + i] != 0 else ""
+		return Items.get_item_name(inv.ids[Inventory.HOTBAR_SIZE + i]) if inv.ids[Inventory.HOTBAR_SIZE + i] != 0 else ""
 	if _hover_slot >= _armor_slot_index(0) and _hover_slot < _armor_slot_index(0) + 4:
 		var i: int = _hover_slot - _armor_slot_index(0)
-		return Items.get_name(inv.armor_ids[i]) if inv.armor_ids[i] != 0 else ""
+		return Items.get_item_name(inv.armor_ids[i]) if inv.armor_ids[i] != 0 else ""
 	if _hover_slot >= _craft_slot_index(0) and _hover_slot < _craft_slot_index(0) + 4:
 		var i: int = _hover_slot - _craft_slot_index(0)
-		return Items.get_name(_craft_ids[i]) if _craft_ids[i] != 0 else ""
+		return Items.get_item_name(_craft_ids[i]) if _craft_ids[i] != 0 else ""
 	if _hover_slot == _craft_out_slot_index():
-		return Items.get_name(_craft_output_id) if _craft_output_id != 0 else ""
+		return Items.get_item_name(_craft_output_id) if _craft_output_id != 0 else ""
 	return ""
 
 

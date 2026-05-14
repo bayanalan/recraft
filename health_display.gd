@@ -1,9 +1,9 @@
 extends Control
 
-const HEART_SIZE: int = 9
-const HEART_GAP: int = 1
+const HEART_SIZE: int = 18
+const HEART_GAP: int = 2
 const NUM_HEARTS: int = 10
-const ROW_H: int = HEART_SIZE + 2
+const ROW_H: int = HEART_SIZE + 4
 
 # Colors for the heart pixel art
 const HEART_RED      := Color(0.80, 0.15, 0.15)

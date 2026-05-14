@@ -5,6 +5,7 @@ class_name GameConfig
 ## main.gd reads them on _ready to decide whether to generate or load.
 
 enum StartMode { NEW_WORLD, LOAD_WORLD }
+enum GameMode { SURVIVAL = 0, CREATIVE = 1 }
 
 static var start_mode: int = StartMode.NEW_WORLD
 static var world_size: int = 256
@@ -12,3 +13,4 @@ static var terrain_type: int = 1   # World.TerrainType.VANILLA_DEFAULT
 static var world_seed: int = 0     # 0 = random
 static var save_name: String = ""
 static var world_name: String = "" # user-chosen name, used as default save name
+static var game_mode: int = GameMode.SURVIVAL

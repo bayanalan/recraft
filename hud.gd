@@ -26,14 +26,14 @@ func set_in_lava(in_lava: bool) -> void:
 
 
 func _ready() -> void:
-	# Seed hotbar with classic blocks for new survival worlds
-	var starter: Array[int] = [
-		Chunk.Block.STONE, Chunk.Block.COBBLESTONE, Chunk.Block.DIRT,
-		Chunk.Block.GRASS, Chunk.Block.PLANKS, Chunk.Block.LOG,
-		Chunk.Block.LEAVES, Chunk.Block.SAND, Chunk.Block.GLASS,
-	]
-	for i: int in 9:
-		inventory.set_slot(i, starter[i], 64)
+	if GameConfig.game_mode == GameConfig.GameMode.CREATIVE:
+		var starter: Array[int] = [
+			Chunk.Block.STONE, Chunk.Block.COBBLESTONE, Chunk.Block.DIRT,
+			Chunk.Block.GRASS, Chunk.Block.PLANKS, Chunk.Block.LOG,
+			Chunk.Block.LEAVES, Chunk.Block.SAND, Chunk.Block.GLASS,
+		]
+		for i: int in 9:
+			inventory.set_slot(i, starter[i], 64)
 	_sync_slots_from_inventory()
 
 	crosshair.queue_redraw()

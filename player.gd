@@ -66,6 +66,11 @@ var _capture_cooldown: float = 0.0
 var _lmb_held_last: bool = false
 var _rmb_held_last: bool = false
 
+# Mining state (survival only)
+var _mining_pos: Vector3i = Vector3i(-999999, -999999, -999999)
+var _mine_progress: float = 0.0
+var _mine_required: float = 0.0
+
 # Flying (Minecraft creative style). Toggled by double-tapping Space.
 # Gated by the `Enable Flying` settings toggle so the user can disable the
 # double-tap entirely for survival-like play.
@@ -120,6 +125,9 @@ func _ready() -> void:
 	_head_base_y = head.position.y
 	camera.fov = base_fov
 	_fall_start_y = global_position.y
+	if GameConfig.game_mode == GameConfig.GameMode.SURVIVAL:
+		flying_enabled = false
+		is_flying = false
 
 
 ## Apply a slider value (1-200) from the settings screen. 100 = normal
@@ -210,25 +218,53 @@ func _physics_process(delta: float) -> void:
 	_capture_cooldown = maxf(0.0, _capture_cooldown - delta)
 	var lmb: bool = Input.is_mouse_button_pressed(MOUSE_BUTTON_LEFT) and not chat_open
 	var rmb: bool = Input.is_mouse_button_pressed(MOUSE_BUTTON_RIGHT) and not chat_open
+	var is_survival: bool = GameConfig.game_mode == GameConfig.GameMode.SURVIVAL
 	if world != null and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED and _capture_cooldown <= 0.0:
-		# Press-edge fires immediately (rapid clicking works), held fires on
-		# cooldown expiry (steady ~5 Hz auto-repeat like Minecraft creative).
 		var lmb_edge: bool = lmb and not _lmb_held_last
 		var rmb_edge: bool = rmb and not _rmb_held_last
-		if lmb and (lmb_edge or _break_cooldown <= 0.0):
+
+		if lmb:
 			var ray_origin: Vector3 = camera.global_position
 			var ray_dir: Vector3 = -camera.global_basis.z
-			var result: Dictionary = world.break_block(ray_origin, ray_dir)
-			if result.get("hit", false) and hud != null:
-				for drop: Array in result.get("drops", []):
-					if drop.size() >= 2:
-						hud.give_item(drop[0], drop[1])
-			_break_cooldown = ACTION_COOLDOWN
-			action_performed.emit("break")
+			if is_survival:
+				# Mining requires holding LMB until hardness timer completes.
+				var target: Dictionary = world.raycast_voxel(ray_origin, ray_dir)
+				if target.get("hit", false):
+					var tpos: Vector3i = target["position"]
+					if tpos != _mining_pos:
+						_mining_pos = tpos
+						_mine_progress = 0.0
+						_mine_required = _get_block_hardness(target["block"], hud)
+					_mine_progress += delta
+					if _mine_required <= 0.0 or _mine_progress >= _mine_required:
+						var result: Dictionary = world.break_block(ray_origin, ray_dir)
+						if result.get("hit", false) and hud != null:
+							for drop: Array in result.get("drops", []):
+								if drop.size() >= 2:
+									hud.give_item(drop[0], drop[1])
+						_mining_pos = Vector3i(-999999, -999999, -999999)
+						_mine_progress = 0.0
+						action_performed.emit("break")
+				else:
+					_mining_pos = Vector3i(-999999, -999999, -999999)
+					_mine_progress = 0.0
+			else:
+				# Creative: instant break, auto-repeat.
+				if lmb_edge or _break_cooldown <= 0.0:
+					var result: Dictionary = world.break_block(ray_origin, ray_dir)
+					if result.get("hit", false) and hud != null:
+						for drop: Array in result.get("drops", []):
+							if drop.size() >= 2:
+								hud.give_item(drop[0], drop[1])
+					_break_cooldown = ACTION_COOLDOWN
+					action_performed.emit("break")
+		else:
+			_mining_pos = Vector3i(-999999, -999999, -999999)
+			_mine_progress = 0.0
+
 		if rmb and (rmb_edge or _place_cooldown <= 0.0):
 			var ray_origin: Vector3 = camera.global_position
 			var ray_dir: Vector3 = -camera.global_basis.z
-			# Check for interactable blocks first
 			var interact: Dictionary = world.get_interactable_block(ray_origin, ray_dir)
 			if not interact.is_empty():
 				if rmb_edge:
@@ -237,9 +273,18 @@ func _physics_process(delta: float) -> void:
 			else:
 				var player_aabb := _get_player_aabb()
 				var block_type: int = hud.get_selected_block() if hud != null else Chunk.Block.STONE
-				world.place_block(ray_origin, ray_dir, block_type, player_aabb)
-				_place_cooldown = ACTION_COOLDOWN
-				action_performed.emit("place")
+				if block_type == 0:
+					pass  # empty slot — nothing to place
+				elif Items.is_item(block_type):
+					pass  # non-placeable item
+				else:
+					var placed: bool = world.place_block(ray_origin, ray_dir, block_type, player_aabb)
+					if placed:
+						if is_survival and hud != null:
+							hud.inventory.take_from_slot(hud.selected_slot, 1)
+							hud._sync_slots_from_inventory()
+						_place_cooldown = ACTION_COOLDOWN
+						action_performed.emit("place")
 	_lmb_held_last = lmb
 	_rmb_held_last = rmb
 
@@ -593,3 +638,107 @@ func _on_death() -> void:
 	camera.rotation.z = 0.0
 	if hud != null and hud.has_method("update_health"):
 		hud.update_health(health)
+
+
+## Returns how many seconds the player must hold LMB to break `block`.
+## 0.0 = instant. Accounts for the held tool if `hud` is available.
+func _get_block_hardness(block: int, hud_node: Node) -> float:
+	# Map block type to base hardness (seconds, bare-handed, in Minecraft terms).
+	var base: float
+	match block:
+		Chunk.Block.AIR, Chunk.Block.FIRE, Chunk.Block.POPPY, Chunk.Block.DANDELION,
+		Chunk.Block.TORCH, Chunk.Block.RED_MUSHROOM, Chunk.Block.BROWN_MUSHROOM,
+		Chunk.Block.CRIMSON_FUNGUS, Chunk.Block.WARPED_FUNGUS, Chunk.Block.NETHER_PORTAL:
+			return 0.0
+		Chunk.Block.DIRT, Chunk.Block.SAND:
+			base = 0.75
+		Chunk.Block.GRASS:
+			base = 0.9
+		Chunk.Block.LEAVES, Chunk.Block.GLASS, Chunk.Block.WATER, Chunk.Block.LAVA:
+			base = 0.3
+		Chunk.Block.PLANKS, Chunk.Block.LOG, Chunk.Block.BOOKSHELF,
+		Chunk.Block.CRIMSON_STEM, Chunk.Block.WARPED_STEM,
+		Chunk.Block.NETHER_WART_BLOCK, Chunk.Block.WARPED_WART_BLOCK,
+		Chunk.Block.CRIMSON_NYLIUM, Chunk.Block.WARPED_NYLIUM:
+			base = 1.5
+		Chunk.Block.STONE, Chunk.Block.COBBLESTONE, Chunk.Block.MOSSY_COBBLESTONE,
+		Chunk.Block.BRICK, Chunk.Block.SMOOTH_STONE, Chunk.Block.SMOOTH_STONE_SLAB,
+		Chunk.Block.NETHERRACK, Chunk.Block.NETHER_GOLD_ORE, Chunk.Block.NETHER_QUARTZ_ORE:
+			base = 7.5
+		Chunk.Block.COAL_ORE, Chunk.Block.IRON_ORE, Chunk.Block.GOLD_ORE:
+			base = 15.0
+		Chunk.Block.DIAMOND_ORE:
+			base = 15.0
+		Chunk.Block.IRON_BLOCK, Chunk.Block.GOLD_BLOCK:
+			base = 25.0
+		Chunk.Block.DIAMOND_BLOCK:
+			base = 25.0
+		Chunk.Block.SPONGE:
+			base = 0.9
+		Chunk.Block.WOOL_WHITE, Chunk.Block.WOOL_RED, Chunk.Block.WOOL_YELLOW,
+		Chunk.Block.WOOL_GREEN, Chunk.Block.WOOL_BLUE, Chunk.Block.WOOL_ORANGE,
+		Chunk.Block.WOOL_MAGENTA, Chunk.Block.WOOL_LIGHT_BLUE, Chunk.Block.WOOL_LIME,
+		Chunk.Block.WOOL_PINK, Chunk.Block.WOOL_GRAY, Chunk.Block.WOOL_LIGHT_GRAY,
+		Chunk.Block.WOOL_CYAN, Chunk.Block.WOOL_PURPLE, Chunk.Block.WOOL_BROWN,
+		Chunk.Block.WOOL_BLACK:
+			base = 1.2
+		Chunk.Block.OBSIDIAN:
+			base = 50.0
+		Chunk.Block.TNT:
+			base = 0.0
+		Chunk.Block.FURNACE, Chunk.Block.CRAFTING_TABLE:
+			base = 3.5
+		_:
+			base = 5.0
+
+	# Determine tool speed multiplier based on held item and block category.
+	var mult: float = 1.0
+	if hud_node != null and hud_node.has_method("get_selected_block"):
+		var held: int = hud_node.get_selected_block()
+		var is_pickaxe_block: bool = block == Chunk.Block.STONE \
+			or block == Chunk.Block.COBBLESTONE or block == Chunk.Block.MOSSY_COBBLESTONE \
+			or block == Chunk.Block.BRICK or block == Chunk.Block.SMOOTH_STONE \
+			or block == Chunk.Block.SMOOTH_STONE_SLAB \
+			or block == Chunk.Block.COAL_ORE or block == Chunk.Block.IRON_ORE \
+			or block == Chunk.Block.GOLD_ORE or block == Chunk.Block.DIAMOND_ORE \
+			or block == Chunk.Block.IRON_BLOCK or block == Chunk.Block.GOLD_BLOCK \
+			or block == Chunk.Block.DIAMOND_BLOCK or block == Chunk.Block.NETHERRACK \
+			or block == Chunk.Block.NETHER_GOLD_ORE or block == Chunk.Block.NETHER_QUARTZ_ORE \
+			or block == Chunk.Block.OBSIDIAN or block == Chunk.Block.FURNACE
+		var is_axe_block: bool = block == Chunk.Block.LOG or block == Chunk.Block.PLANKS \
+			or block == Chunk.Block.BOOKSHELF or block == Chunk.Block.CRAFTING_TABLE \
+			or block == Chunk.Block.CRIMSON_STEM or block == Chunk.Block.WARPED_STEM
+		var is_shovel_block: bool = block == Chunk.Block.DIRT or block == Chunk.Block.SAND \
+			or block == Chunk.Block.GRASS or block == Chunk.Block.SPONGE
+		match held:
+			Items.WOOD_PICKAXE:
+				if is_pickaxe_block: mult = 2.0
+			Items.STONE_PICKAXE:
+				if is_pickaxe_block: mult = 4.0
+			Items.IRON_PICKAXE:
+				if is_pickaxe_block: mult = 6.0
+			Items.GOLD_PICKAXE:
+				if is_pickaxe_block: mult = 12.0
+			Items.DIAMOND_PICKAXE:
+				if is_pickaxe_block: mult = 8.0
+			Items.WOOD_AXE:
+				if is_axe_block: mult = 2.0
+			Items.STONE_AXE:
+				if is_axe_block: mult = 4.0
+			Items.IRON_AXE:
+				if is_axe_block: mult = 6.0
+			Items.GOLD_AXE:
+				if is_axe_block: mult = 12.0
+			Items.DIAMOND_AXE:
+				if is_axe_block: mult = 8.0
+			Items.WOOD_SHOVEL:
+				if is_shovel_block: mult = 2.0
+			Items.STONE_SHOVEL:
+				if is_shovel_block: mult = 4.0
+			Items.IRON_SHOVEL:
+				if is_shovel_block: mult = 6.0
+			Items.GOLD_SHOVEL:
+				if is_shovel_block: mult = 12.0
+			Items.DIAMOND_SHOVEL:
+				if is_shovel_block: mult = 8.0
+	return base / mult

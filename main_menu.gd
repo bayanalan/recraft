@@ -46,6 +46,7 @@ var _current_screen: int = Screen.MAIN
 var _nw_size: int = 64
 var _nw_terrain: int = 1
 var _nw_seed: int = 0
+var _nw_mode: int = 0  # 0 = Survival, 1 = Creative
 
 # --- Settings state (mirrors pause_menu — same config file) ---
 var view_distance: int = DEFAULT_VIEW_DISTANCE
@@ -373,6 +374,27 @@ func _build_new_world() -> void:
 	_highlight_group(type_btns, type_values.find(_nw_terrain))
 
 	_content.add_child(_make_separator(10))
+	_content.add_child(_make_label("Game Mode:", 26))
+
+	var mode_row := HBoxContainer.new()
+	mode_row.alignment = BoxContainer.ALIGNMENT_CENTER
+	mode_row.add_theme_constant_override("separation", 6)
+	_content.add_child(mode_row)
+
+	var mode_names: Array[String] = ["Survival", "Creative"]
+	var mode_btns: Array[Button] = []
+	for i: int in mode_names.size():
+		var b := _make_button(mode_names[i], 130)
+		var val: int = i
+		b.pressed.connect(func():
+			_nw_mode = val
+			_highlight_group(mode_btns, val)
+		)
+		mode_row.add_child(b)
+		mode_btns.append(b)
+	_highlight_group(mode_btns, _nw_mode)
+
+	_content.add_child(_make_separator(10))
 	_content.add_child(_make_label("Seed (optional):", 26))
 	var seed_edit := _make_line_edit("blank = random")
 	if _nw_seed != 0:
@@ -397,6 +419,7 @@ func _build_new_world() -> void:
 		GameConfig.terrain_type = _nw_terrain
 		GameConfig.world_seed = _nw_seed
 		GameConfig.world_name = wn
+		GameConfig.game_mode = _nw_mode
 		get_tree().change_scene_to_file("res://main.tscn")
 	)
 	action_row.add_child(gen_btn)

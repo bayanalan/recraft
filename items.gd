@@ -88,7 +88,7 @@ static func get_max_stack(id: int) -> int:
 	return 64
 
 
-static func get_name(id: int) -> String:
+static func get_item_name(id: int) -> String:
 	match id:
 		COAL:        return "Coal"
 		RAW_IRON:    return "Raw Iron"
