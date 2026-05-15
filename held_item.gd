@@ -16,36 +16,27 @@ extends Control
 ##     skips fog / block lights / portals.
 
 const VIEWPORT_SIZE: int = 512              # square, keeps aspect at 1:1
-const BASE_DISPLAY_SIZE: int = 520          # on-screen size in UI pixels
-# Negative margins push the container past the screen edge so the cube
-# partially clips off-screen — matches Minecraft's first-person view where
-# the held item "extends" beyond the visible frame.
-const MARGIN_RIGHT: float = -155.0
-const MARGIN_BOTTOM: float = -155.0
+const BASE_DISPLAY_SIZE: int = 500          # on-screen container size
+# Large negative margins clip the item off-screen on the right and bottom,
+# giving the Minecraft "arm extending past the frame" feel.
+const MARGIN_RIGHT: float = -120.0
+const MARGIN_BOTTOM: float = -140.0
 
-# Ortho frustum half-height. Sized just slightly bigger than the cube's
-# full silhouette (≈0.866 for a 1×1×1 rotated diagonally) so the cube
-# visually dominates the display while still leaving a little swing margin.
-const CAMERA_ORTHO_SIZE: float = 2.0
+# Ortho frustum — larger value zooms out so the cube appears smaller on screen.
+const CAMERA_ORTHO_SIZE: float = 1.60
 
-# Idle pose — cube centered in its viewport (the whole viewport already
-# sits in the bottom-right corner of the screen, so we don't need to offset
-# the mesh inside it). Angles chosen to show the top, front, and right
-# faces in a classic Minecraft three-quarter view.
-#
-# In Godot, positive X-rotation rotates +Y toward +Z (toward the camera at
-# +Z), so a +25° X tilt exposes the top face. Swing forward = top tips away
-# from the camera = NEGATIVE X delta.
-const IDLE_ROT_X: float = 0.436         # +25° — exposes top face
-const IDLE_ROT_Y: float = 0.524         # +30° — quarter turn for 3-face view
-const IDLE_POS := Vector3(0.0, 0.0, 0.0)
+# Idle pose — shifted to bottom-right so the cube extends off screen.
+# Steeper rotations reveal three faces like Minecraft's classic view.
+const IDLE_ROT_X: float = 0.61          # +35° — exposes top face
+const IDLE_ROT_Y: float = -0.785        # -45° — three-quarter view, left-lean like Minecraft
+const IDLE_POS := Vector3(0.45, -0.28, 0.0)
 
-# Swing animation — quick rotation-forward tap with a small downward dip
-# and return. Sine curve peaks at mid-swing. Kept short and subtle so rapid
-# clicks don't feel sluggish or flail-y.
-const SWING_DURATION: float = 0.18
-const SWING_ROT_X_DELTA: float = -0.524 # -30° — noticeable tip without over-swing
-const SWING_POS_Y_DELTA: float = -0.06  # small chop
+# Swing animation — arm sweeps up and left like Minecraft.
+const SWING_DURATION: float = 0.26
+const SWING_ROT_X_DELTA: float = 0.35   # slight forward tilt
+const SWING_ROT_Y_DELTA: float = 0.65   # swings left (toward center of screen)
+const SWING_POS_X_DELTA: float = -0.30  # moves left
+const SWING_POS_Y_DELTA: float = 0.22   # bounces up
 
 var _container: SubViewportContainer = null
 var _viewport: SubViewport = null
@@ -56,12 +47,15 @@ var _atlas: ImageTexture = null
 
 # -1 = forces rebuild on first _process so the mesh matches the hotbar.
 var _current_block: int = -1
+# Non-zero when holding an item (id >= 200) — drawn as 2D icon.
+var _current_item: int = 0
 # -1 = idle; otherwise holds elapsed swing time in seconds.
 var _swing_time: float = -1.0
 
 
 func _ready() -> void:
 	mouse_filter = Control.MOUSE_FILTER_IGNORE
+	texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
 	set_anchors_preset(Control.PRESET_FULL_RECT)
 	_atlas = BlockTextures.create_atlas()
 	_build_viewport()
@@ -131,6 +125,9 @@ func _process(delta: float) -> void:
 		if sel != _current_block:
 			_set_block(sel)
 
+	if _current_item != 0:
+		queue_redraw()
+
 	if _swing_time >= 0.0:
 		_swing_time += delta
 		if _swing_time >= SWING_DURATION:
@@ -142,21 +139,54 @@ func _process(delta: float) -> void:
 			# at mid-swing and snaps back without needing a separate return leg.
 			var s: float = sin((_swing_time / SWING_DURATION) * PI)
 			_mesh_instance.rotation = Vector3(
-				IDLE_ROT_X + SWING_ROT_X_DELTA * s,
+				IDLE_ROT_X + 1.05 * s,
 				IDLE_ROT_Y,
 				0.0,
 			)
-			_mesh_instance.position = IDLE_POS + Vector3(0.0, SWING_POS_Y_DELTA * s, 0.0)
+			_mesh_instance.position = IDLE_POS
 
 
 func _set_block(block_type: int) -> void:
 	_current_block = block_type
-	if block_type == Chunk.Block.AIR:
+	if block_type == Chunk.Block.AIR or block_type == 0:
 		_mesh_instance.mesh = null
 		_container.visible = false
+		_current_item = 0
+		queue_redraw()
 		return
+	if Items.is_item(block_type):
+		_current_item = block_type
+		_container.visible = false
+		_mesh_instance.mesh = null
+		queue_redraw()
+		return
+	_current_item = 0
 	_container.visible = true
 	_mesh_instance.mesh = _build_mesh_for(block_type)
+	queue_redraw()
+
+
+func _draw() -> void:
+	if _current_item == 0:
+		return
+	var vp: Vector2 = get_viewport_rect().size
+	var half_size: float = vp.y * 0.22
+	var _is_tool: bool = _current_item >= 220 and _current_item <= 244
+	if _is_tool:
+		half_size *= 1.45
+	# Tools sit further right so the grip/handle is at the screen edge.
+	var cx: float = vp.x - half_size * (0.75 if _is_tool else 1.1)
+	# Sit slightly off-screen at the bottom.
+	var cy: float = vp.y - half_size * 0.65
+	var rot: float = deg_to_rad(-12.0)
+	if _swing_time >= 0.0:
+		var s: float = sin((_swing_time / SWING_DURATION) * PI)
+		cx -= half_size * 0.65 * s  # swings left
+		cy -= half_size * 0.45 * s  # bounces up
+		rot -= deg_to_rad(22.0) * s # rotates counterclockwise (left swing)
+	draw_set_transform(Vector2(cx, cy), rot, Vector2.ONE)
+	Items.draw_item_icon(self, 0.0, 0.0, half_size, _current_item)
+	draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
 
 
 ## Build an ArrayMesh representing `block_type` as it should appear in hand.

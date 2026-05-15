@@ -65,7 +65,7 @@ func _draw() -> void:
 		var slot_id: int = slots[i]
 		if slot_id != 0:
 			if Items.is_item(slot_id):
-				Items.draw_item_icon(self, cx, cy + BLOCK_S * BlockIcon.CUBE_H * 0.5, BLOCK_S * 2.0, slot_id)
+				Items.draw_item_icon(self, cx, cy + BLOCK_S * BlockIcon.CUBE_H * 0.5, BLOCK_S * 1.0, slot_id)
 			else:
 				BlockIcon.draw_iso(self, _atlas, cx, cy, BLOCK_S, slot_id)
 		# Count label (for stackable items > 1)
@@ -75,6 +75,23 @@ func _draw() -> void:
 			if inv != null and i < inv.counts.size() and inv.counts[i] > 1:
 				draw_string(ThemeDB.fallback_font, Vector2(sx + SLOT_SIZE - 18, sy + SLOT_SIZE - 6),
 					str(inv.counts[i]), HORIZONTAL_ALIGNMENT_LEFT, -1, PauseMenu._fs(16), Color(1, 1, 1))
+			if inv != null and i < inv.durabilities.size() and inv.durabilities[i] > 0 and slot_id != 0:
+				var max_dur: int = Items.get_max_durability(slot_id)
+				if max_dur > 0:
+					var frac: float = float(inv.durabilities[i]) / float(max_dur)
+					var dur_col: Color
+					if frac > 0.5:
+						dur_col = Color(0.17, 0.73, 0.17)
+					elif frac > 0.25:
+						dur_col = Color(0.93, 0.84, 0.12)
+					elif frac > 0.1:
+						dur_col = Color(0.82, 0.35, 0.08)
+					else:
+						dur_col = Color(0.85, 0.10, 0.10)
+					var dur_max_w: float = SLOT_SIZE - 10
+					var dur_w: float = maxf(1.0, dur_max_w * frac)
+					draw_rect(Rect2(sx + 5, sy + SLOT_SIZE - 8, dur_max_w, 3), Color(0, 0, 0, 1.0))
+					draw_rect(Rect2(sx + 5, sy + SLOT_SIZE - 8, dur_w, 3), dur_col)
 
 		# Selection highlight
 		if i == selected:

@@ -4,6 +4,9 @@ extends MeshInstance3D
 # Slight inflation to prevent z-fighting with block faces
 const INFLATE: float = 0.003
 
+var _break_mesh: MeshInstance3D = null
+var _break_mat: StandardMaterial3D = null
+
 
 func _ready() -> void:
 	# Build a wireframe cube as 12 line segments (24 vertices)
@@ -46,11 +49,39 @@ func _ready() -> void:
 	mesh = arr_mesh
 	visible = false
 
+	# Break-progress overlay: solid transparent dark cube that darkens while mining.
+	var box := BoxMesh.new()
+	box.size = Vector3(1.002, 1.002, 1.002)
+	_break_mat = StandardMaterial3D.new()
+	_break_mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	_break_mat.albedo_color = Color(0, 0, 0, 0)
+	_break_mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	_break_mat.cull_mode = BaseMaterial3D.CULL_DISABLED
+	_break_mat.depth_draw_mode = BaseMaterial3D.DEPTH_DRAW_DISABLED
+	_break_mesh = MeshInstance3D.new()
+	_break_mesh.mesh = box
+	_break_mesh.material_override = _break_mat
+	_break_mesh.position = Vector3(0.5, 0.5, 0.5)
+	_break_mesh.visible = false
+	add_child(_break_mesh)
+
 
 func show_at(block_pos: Vector3i) -> void:
 	global_position = Vector3(block_pos)
 	visible = true
 
 
+func set_break_progress(progress: float) -> void:
+	if _break_mesh == null:
+		return
+	if progress <= 0.0:
+		_break_mesh.visible = false
+		return
+	_break_mesh.visible = visible
+	_break_mat.albedo_color = Color(0.0, 0.0, 0.0, lerpf(0.06, 0.65, progress))
+
+
 func hide_outline() -> void:
 	visible = false
+	if _break_mesh != null:
+		_break_mesh.visible = false

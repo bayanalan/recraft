@@ -24,6 +24,7 @@ const TERRAIN_VANILLA_HILLY: int = 2
 # Feature grid spacings
 const TREE_GRID: int = 6
 const POOL_GRID: int = 10
+const LAVA_POOL_GRID: int = 12
 
 
 
@@ -231,6 +232,64 @@ static func _pool_block_at(pools: Array, wx: int, wy: int, wz: int) -> int:
 	return -1
 
 
+## Pre-compute every deep lava pool affecting this chunk. Returns Array of
+## dicts with keys: cx, cy (pool y), cz, radius. Pools are underground only
+## (cy in [3,14]) and never appear near the surface.
+static func _lava_pools_near_chunk(chunk_pos: Vector3i, seed: int) -> Array:
+	var pools: Array = []
+	const LAVA_REACH: int = 4
+	var min_x: int = chunk_pos.x * CHUNK_SIZE - LAVA_REACH
+	var max_x: int = chunk_pos.x * CHUNK_SIZE + CHUNK_SIZE + LAVA_REACH
+	var min_z: int = chunk_pos.z * CHUNK_SIZE - LAVA_REACH
+	var max_z: int = chunk_pos.z * CHUNK_SIZE + CHUNK_SIZE + LAVA_REACH
+
+	var gmin_x: int = int(floor(float(min_x) / float(LAVA_POOL_GRID)))
+	var gmax_x: int = int(floor(float(max_x) / float(LAVA_POOL_GRID)))
+	var gmin_z: int = int(floor(float(min_z) / float(LAVA_POOL_GRID)))
+	var gmax_z: int = int(floor(float(max_z) / float(LAVA_POOL_GRID)))
+
+	var rng := RandomNumberGenerator.new()
+	for gx: int in range(gmin_x, gmax_x + 1):
+		for gz: int in range(gmin_z, gmax_z + 1):
+			rng.seed = _hash_cell(seed ^ 0xF2A4C9, gx, gz)
+			if rng.randf() > 0.15:
+				continue
+			var off_x: int = rng.randi_range(0, LAVA_POOL_GRID - 1)
+			var off_z: int = rng.randi_range(0, LAVA_POOL_GRID - 1)
+			var cx: int = gx * LAVA_POOL_GRID + off_x
+			var cz: int = gz * LAVA_POOL_GRID + off_z
+			var cy: int = 3 + (rng.randi() % 12)  # 3..14, always underground
+			pools.append({
+				"cx": cx,
+				"cy": cy,
+				"cz": cz,
+				"radius": 1 + (rng.randi() % 3),  # 1..3
+			})
+	return pools
+
+
+## Query: lava pool override at (wx, wy, wz). Returns:
+##   -1 : no pool here (use base terrain)
+##    0 : AIR (carved opening)
+##    LAVA block id
+static func _lava_pool_block_at(pools: Array, wx: int, wy: int, wz: int) -> int:
+	for pool: Dictionary in pools:
+		var cx: int = pool["cx"]
+		var cy: int = pool["cy"]
+		var cz: int = pool["cz"]
+		var radius: int = pool["radius"]
+		if wy != cy and wy != cy - 1:
+			continue
+		var dx: int = wx - cx
+		var dz: int = wz - cz
+		if absi(dx) + absi(dz) > radius:
+			continue
+		if wy == cy:
+			return 0  # AIR at pool opening
+		return Chunk.Block.LAVA
+	return -1
+
+
 ## Generate 18³ padded voxels for a chunk. This includes this chunk's
 ## interior 16³ voxels plus the 1-voxel border from neighbor chunks, all
 ## computed deterministically from seed. The mesh builder reads directly
@@ -281,6 +340,7 @@ static func generate_padded_voxels(
 	# Pre-compute features affecting this chunk.
 	var trees: Array = _trees_near_chunk(chunk_pos, seed, terrain_type, world_size, t_noise, b_noise)
 	var pools: Array = _pools_near_chunk(chunk_pos, seed, terrain_type, world_size, t_noise, b_noise)
+	var lava_pools: Array = _lava_pools_near_chunk(chunk_pos, seed)
 
 	# Fill the padded voxel buffer.
 	var padded := PackedByteArray()
@@ -326,6 +386,12 @@ static func generate_padded_voxels(
 					var tb_block: int = _tree_block_at(trees, wx, wy, wz)
 					if tb_block != 0:
 						block = tb_block
+
+				# Lava pools override deep underground stone cells.
+				if not lava_pools.is_empty() and wy >= 2 and wy <= 15:
+					var lp: int = _lava_pool_block_at(lava_pools, wx, wy, wz)
+					if lp >= 0:
+						block = lp
 
 				padded[px + py * PADDED_Y + pz * PADDED_Z] = block
 

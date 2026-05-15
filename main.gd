@@ -36,6 +36,7 @@ var _day_time: float = 0.25  # start at noon for new worlds
 var do_daylight_cycle: bool = true
 var tick_rate: float = 20.0   # base=20; higher = faster day/night
 var noclip: bool = false
+var fullbright: bool = false
 # Sun/moon visual nodes — created in _ready.
 var _sun_mesh: MeshInstance3D = null
 var _moon_mesh: MeshInstance3D = null
@@ -383,8 +384,8 @@ func _update_day_night(delta: float) -> void:
 		ambient = Vector3(0.18, 0.08, 0.06)
 		sky_light = Vector3(0.30, 0.15, 0.10)
 	else:
-		var day_ambient := Vector3(0.20, 0.22, 0.28)
-		var night_ambient := Vector3(0.08, 0.09, 0.14)
+		var day_ambient := Vector3(0.06, 0.07, 0.09)
+		var night_ambient := Vector3(0.02, 0.02, 0.03)
 		ambient = day_ambient * day_factor + night_ambient * (1.0 - day_factor)
 		var day_sky_light := Vector3(0.58, 0.56, 0.50)
 		sky_light = day_sky_light * day_factor
@@ -404,6 +405,11 @@ func _update_day_night(delta: float) -> void:
 			sky = night_sky.lerp(sunset_sky, t2) if t2 < 0.5 else sunset_sky.lerp(day_sky, (t2 - 0.5) * 2.0)
 		else:
 			sky = night_sky
+
+	# Fullbright override: everything uniformly lit, ignores time of day.
+	if fullbright:
+		ambient = Vector3(1.0, 1.0, 1.0)
+		sky_light = Vector3(1.0, 1.0, 1.0)
 
 	# Push to all three shaders — just two uniforms now (no direction).
 	var ambient_col := Color(ambient.x, ambient.y, ambient.z)
@@ -560,6 +566,7 @@ func _wire_pause_menu() -> void:
 	pause_menu.crouch_toggle_changed.connect(_on_crouch_toggle_changed)
 	pause_menu.mipmaps_changed.connect(_on_mipmaps_changed)
 	pause_menu.mouse_sensitivity_changed.connect(_on_mouse_sensitivity_changed)
+	pause_menu.fullbright_changed.connect(_on_fullbright_changed)
 	# Apply the pause menu's initial settings to the camera / shader / player / window.
 	_on_view_distance_changed(pause_menu.view_distance)
 	_on_connected_textures_changed(pause_menu.connected_textures)
@@ -572,6 +579,7 @@ func _wire_pause_menu() -> void:
 	_on_crouch_toggle_changed(pause_menu.crouch_toggle)
 	_on_mipmaps_changed(pause_menu.mipmaps)
 	_on_mouse_sensitivity_changed(pause_menu.mouse_sensitivity)
+	_on_fullbright_changed(pause_menu.fullbright)
 
 
 func _on_view_distance_changed(distance: int) -> void:
@@ -598,10 +606,9 @@ func _on_connected_textures_changed(enabled: bool) -> void:
 
 func _on_flying_enabled_changed(enabled: bool) -> void:
 	if player != null:
-		player.flying_enabled = enabled
-		# If flying gets disabled mid-flight, drop out of it so the player
-		# doesn't get stuck hovering with no way to descend.
-		if not enabled and player.is_flying:
+		var effective: bool = enabled and GameConfig.game_mode != GameConfig.GameMode.SURVIVAL
+		player.flying_enabled = effective
+		if not effective and player.is_flying:
 			player.is_flying = false
 			player.velocity.y = 0.0
 
@@ -711,6 +718,10 @@ func _on_mipmaps_changed(enabled: bool) -> void:
 		held.refresh_atlas()
 
 
+func _on_fullbright_changed(enabled: bool) -> void:
+	fullbright = enabled
+
+
 ## Returns the HUD's HeldItem node, or null if it hasn't been wired yet.
 ## Kept as a lookup rather than a cached ref so scene reloads (e.g. when
 ## returning from the main menu) don't leave a stale pointer.
@@ -764,10 +775,13 @@ func _unhandled_input(event: InputEvent) -> void:
 			_pause_game()
 			get_viewport().set_input_as_handled()
 
-	# E opens the survival inventory (only while game is active)
+	# E opens inventory — creative mode gets the block-select grid, survival gets the inventory UI
 	if event is InputEventKey and event.pressed and event.keycode == KEY_E:
 		if not get_tree().paused and hud != null:
-			hud.open_inventory()
+			if GameConfig.game_mode == GameConfig.GameMode.CREATIVE:
+				hud.open_block_select()
+			else:
+				hud.open_inventory()
 			get_viewport().set_input_as_handled()
 
 	# C opens the creative block select
@@ -778,23 +792,31 @@ func _unhandled_input(event: InputEvent) -> void:
 
 
 func _pause_game() -> void:
+	if not is_instance_valid(pause_menu):
+		return
 	get_tree().paused = true
 	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
 	pause_menu.show_menu()
 
 
 func _resume_game() -> void:
+	if not is_instance_valid(pause_menu):
+		return
 	pause_menu.hide_menu()
 	get_tree().paused = false
 	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
 
 
 func _quit_game() -> void:
+	if _saving:
+		return
 	_auto_save_state()
 	get_tree().quit()
 
 
 func _on_main_menu_requested() -> void:
+	if _saving:
+		return
 	_auto_save_state()
 	get_tree().paused = false
 	get_tree().change_scene_to_file("res://main_menu.tscn")
@@ -861,7 +883,7 @@ func _ensure_valid_position() -> void:
 ## Build the complete game state dictionary for saving. Used by explicit
 ## save, auto-save, and portal-transition save to stay consistent.
 func _build_game_state_dict() -> Dictionary:
-	return {
+	var gs: Dictionary = {
 		"day_time": _day_time,
 		"do_daylight_cycle": do_daylight_cycle,
 		"tick_rate": tick_rate,
@@ -877,7 +899,17 @@ func _build_game_state_dict() -> Dictionary:
 		"nether_player_x": _nether_player_pos.x,
 		"nether_player_y": _nether_player_pos.y,
 		"nether_player_z": _nether_player_pos.z,
+		"game_mode": GameConfig.game_mode,
+		"cheats_enabled": GameConfig.cheats_enabled,
 	}
+	if player != null:
+		gs["player_health"] = player.health
+		gs["player_x"] = player.global_position.x
+		gs["player_y"] = player.global_position.y
+		gs["player_z"] = player.global_position.z
+	if hud != null and "inventory" in hud:
+		gs["inventory"] = hud.inventory.to_dict()
+	return gs
 
 
 func _save_dimension_cache(save_name: String) -> void:
@@ -960,6 +992,13 @@ func _on_save_requested(save_name: String) -> void:
 	# Also save the inactive dimension's cached voxels as a sidecar file.
 	if ok:
 		_save_dimension_cache(save_name)
+		# Keep the .state sidecar in sync so a load immediately after an
+		# overwrite-save reads fresh data instead of the previous .state.
+		var state_path: String = "user://saves/" + save_name + ".state"
+		var sf: FileAccess = FileAccess.open(state_path, FileAccess.WRITE)
+		if sf != null:
+			sf.store_string(JSON.stringify(gs))
+			sf.close()
 	world.generation_progress.disconnect(_on_generation_progress)
 	if ok:
 		print("Saved: ", save_name)
@@ -970,7 +1009,8 @@ func _on_save_requested(save_name: String) -> void:
 	if elapsed < MIN_VISIBLE_MS:
 		await get_tree().create_timer(float(MIN_VISIBLE_MS - elapsed) / 1000.0).timeout
 	# Return to the pause menu's main screen — user was here before saving.
-	pause_menu.show_menu()
+	if is_instance_valid(pause_menu):
+		pause_menu.show_menu()
 	_saving = false
 
 
@@ -989,6 +1029,7 @@ func _on_load_requested(save_name: String) -> void:
 	world.generation_progress.connect(_on_generation_progress)
 	await world.load_from_save(int(data["size"]), data["voxels"], int(data.get("seed", 0)), int(data.get("terrain_type", 1)))
 	world.generation_progress.disconnect(_on_generation_progress)
+	# Start with position from the binary save; the sidecar may override it below.
 	var pp: Vector3 = data["player_pos"]
 	player.global_position = pp
 	player.velocity = Vector3.ZERO
@@ -1004,8 +1045,16 @@ func _on_load_requested(save_name: String) -> void:
 			sf.close()
 			if parsed is Dictionary:
 				gs = parsed
-	if gs.is_empty():
-		gs = data.get("game_state", {})
+	# Supplement with any keys from the embedded save blob that the sidecar
+	# doesn't have (e.g. "inventory" on old saves that predated the sidecar).
+	var embedded: Dictionary = data.get("game_state", {})
+	for _k: String in embedded.keys():
+		if not gs.has(_k):
+			gs[_k] = embedded[_k]
+	# Override player position from sidecar — it is written on every quit so
+	# it is always more recent than the binary file's stored position.
+	if gs.has("player_x") and gs.has("player_y") and gs.has("player_z"):
+		player.global_position = Vector3(float(gs["player_x"]), float(gs["player_y"]), float(gs["player_z"]))
 	if gs.has("day_time"):
 		_day_time = float(gs["day_time"])
 	if gs.has("do_daylight_cycle"):
@@ -1037,15 +1086,35 @@ func _on_load_requested(save_name: String) -> void:
 			float(gs["nether_player_y"]),
 			float(gs["nether_player_z"]),
 		)
+	# Restore game_mode and cheats — default to SURVIVAL/false if not in save.
+	GameConfig.game_mode = int(gs.get("game_mode", GameConfig.GameMode.SURVIVAL))
+	if gs.has("cheats_enabled"):
+		GameConfig.cheats_enabled = bool(gs["cheats_enabled"])
+	if gs.has("player_health") and player != null:
+		player.health = int(gs["player_health"])
+		if hud != null and hud.has_method("update_health"):
+			hud.update_health(player.health)
+	# Re-apply mode-dependent behaviors that ran before the save was read.
+	if pause_menu != null:
+		_on_flying_enabled_changed(pause_menu.flying_enabled)
+	if hud != null:
+		var hd: Node = hud.get_node_or_null("HealthDisplay")
+		if hd != null:
+			hd.visible = GameConfig.game_mode != GameConfig.GameMode.CREATIVE
+	if gs.has("inventory") and hud != null and "inventory" in hud:
+		hud.inventory.from_dict(gs["inventory"])
+		hud._sync_slots_from_inventory()
 	_load_dimension_cache(save_name)
 	_saving = false
 	_resume_game()
 
 
-func _on_new_world_requested(size: int, terrain_type: int, seed: int = 0, world_name: String = "My World") -> void:
+func _on_new_world_requested(size: int, terrain_type: int, seed: int = 0, world_name: String = "My World", game_mode: int = GameConfig.game_mode, cheats: bool = GameConfig.cheats_enabled) -> void:
 	if _saving:
 		return
 	_saving = true
+	GameConfig.game_mode = game_mode
+	GameConfig.cheats_enabled = cheats
 	_current_world_name = world_name
 	pause_menu.default_save_name = world_name
 	pause_menu.show_loading("Generating World")
@@ -1055,6 +1124,27 @@ func _on_new_world_requested(size: int, terrain_type: int, seed: int = 0, world_
 	world.generation_progress.disconnect(_on_generation_progress)
 	player.global_position = world.find_spawn_position()
 	player.velocity = Vector3.ZERO
+	player.health = player.max_health
+	if hud != null and hud.has_method("update_health"):
+		hud.update_health(player.max_health)
+	if pause_menu != null:
+		_on_flying_enabled_changed(pause_menu.flying_enabled)
+	# Apply mode-dependent HUD state for the newly created world.
+	if hud != null:
+		# Always wipe inventory so a new world never inherits the previous one's items.
+		hud.inventory = Inventory.new()
+		var hd: Node = hud.get_node_or_null("HealthDisplay")
+		if hd != null:
+			hd.visible = GameConfig.game_mode != GameConfig.GameMode.CREATIVE
+		if GameConfig.game_mode == GameConfig.GameMode.CREATIVE:
+			var starter: Array[int] = [
+				Chunk.Block.STONE, Chunk.Block.COBBLESTONE, Chunk.Block.DIRT,
+				Chunk.Block.GRASS, Chunk.Block.PLANKS, Chunk.Block.LOG,
+				Chunk.Block.LEAVES, Chunk.Block.SAND, Chunk.Block.GLASS,
+			]
+			for i: int in 9:
+				hud.inventory.set_slot(i, starter[i], 64)
+		hud._sync_slots_from_inventory()
 	_saving = false
 	_resume_game()
 

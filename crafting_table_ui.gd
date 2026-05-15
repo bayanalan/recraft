@@ -160,8 +160,6 @@ func _draw() -> void:
 				_draw_item_centered(r, inv.ids[si], inv.counts[si])
 
 	# Hotbar
-	draw_string(font, Vector2(_panel_rect.position.x + 12, _hotbar_rects[0].position.y - 6),
-		"Hotbar", HORIZONTAL_ALIGNMENT_LEFT, -1, PauseMenu._fs(14), Color(0.8, 0.8, 0.8))
 	for i: int in _hotbar_rects.size():
 		var r: Rect2 = _hotbar_rects[i]
 		_draw_slot(r, _hover_slot == _hotbar_slot_index(i))
@@ -196,7 +194,7 @@ func _draw_item_at(cx: float, cy: float, id: int, count: int) -> void:
 	if Items.is_block(id):
 		BlockIcon.draw_iso(self, _atlas, cx, cy, BLOCK_S, id)
 	else:
-		Items.draw_item_icon(self, cx, cy + BLOCK_S * BlockIcon.CUBE_H * 0.5, BLOCK_S * 2.0, id)
+		Items.draw_item_icon(self, cx, cy + BLOCK_S * BlockIcon.CUBE_H * 0.5, BLOCK_S * 1.0, id)
 	if count > 1:
 		var font: Font = ThemeDB.fallback_font
 		draw_string(font, Vector2(cx + 8, cy + BLOCK_S * BlockIcon.CUBE_H + 14),

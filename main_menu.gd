@@ -47,6 +47,7 @@ var _nw_size: int = 64
 var _nw_terrain: int = 1
 var _nw_seed: int = 0
 var _nw_mode: int = 0  # 0 = Survival, 1 = Creative
+var _nw_cheats: bool = false
 
 # --- Settings state (mirrors pause_menu — same config file) ---
 var view_distance: int = DEFAULT_VIEW_DISTANCE
@@ -401,6 +402,25 @@ func _build_new_world() -> void:
 		seed_edit.text = str(_nw_seed)
 	_content.add_child(seed_edit)
 
+	_content.add_child(_make_separator(8))
+	_content.add_child(_make_label("Cheats:", 26))
+	var cheats_row := HBoxContainer.new()
+	cheats_row.alignment = BoxContainer.ALIGNMENT_CENTER
+	cheats_row.add_theme_constant_override("separation", 6)
+	_content.add_child(cheats_row)
+	var cheats_names: Array[String] = ["Off", "On"]
+	var cheats_btns: Array[Button] = []
+	for ci: int in cheats_names.size():
+		var cb := _make_button(cheats_names[ci], 100)
+		var cv: int = ci
+		cb.pressed.connect(func():
+			_nw_cheats = bool(cv)
+			_highlight_group(cheats_btns, cv)
+		)
+		cheats_row.add_child(cb)
+		cheats_btns.append(cb)
+	_highlight_group(cheats_btns, 0)
+
 	_content.add_child(_make_separator(14))
 
 	var action_row := HBoxContainer.new()
@@ -414,12 +434,14 @@ func _build_new_world() -> void:
 		var wn: String = name_edit.text.strip_edges()
 		if wn.is_empty():
 			wn = "My World"
+		wn = SaveSystem.unique_name(wn)
 		GameConfig.start_mode = GameConfig.StartMode.NEW_WORLD
 		GameConfig.world_size = _nw_size
 		GameConfig.terrain_type = _nw_terrain
 		GameConfig.world_seed = _nw_seed
 		GameConfig.world_name = wn
 		GameConfig.game_mode = _nw_mode
+		GameConfig.cheats_enabled = _nw_cheats
 		get_tree().change_scene_to_file("res://main.tscn")
 	)
 	action_row.add_child(gen_btn)
@@ -464,6 +486,19 @@ func _build_load() -> void:
 			btn_load.pressed.connect(func():
 				GameConfig.start_mode = GameConfig.StartMode.LOAD_WORLD
 				GameConfig.save_name = info.name
+				# Default to survival so a missing .state never bleeds stale
+				# creative mode into the next session.
+				GameConfig.game_mode = GameConfig.GameMode.SURVIVAL
+				# Pre-read game_mode from the .state sidecar so HUD
+				# initialises with the correct mode before the save loads.
+				var sp: String = "user://saves/" + info.name + ".state"
+				if FileAccess.file_exists(sp):
+					var sf: FileAccess = FileAccess.open(sp, FileAccess.READ)
+					if sf != null:
+						var parsed: Variant = JSON.parse_string(sf.get_as_text())
+						sf.close()
+						if parsed is Dictionary and parsed.has("game_mode"):
+							GameConfig.game_mode = int(parsed["game_mode"])
 				get_tree().change_scene_to_file("res://main.tscn")
 			)
 			row.add_child(btn_load)

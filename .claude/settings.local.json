@@ -10,7 +10,12 @@
       "Bash(git ls-tree *)",
       "Bash(git check-ignore *)",
       "Bash(git fetch *)",
-      "Bash(git restore *)"
+      "Bash(git restore *)",
+      "Bash(git commit *)",
+      "Bash(git add *)",
+      "Bash(xargs cat -n)",
+      "Bash(python3 *)",
+      "Bash(pip3 install *)"
     ]
   }
 }

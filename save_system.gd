@@ -156,6 +156,15 @@ static func sanitize_name(input: String) -> String:
 	return result.strip_edges()
 
 
+static func unique_name(base: String) -> String:
+	if not FileAccess.file_exists(SAVE_DIR + base + ".save"):
+		return base
+	var counter: int = 2
+	while FileAccess.file_exists(SAVE_DIR + base + " (" + str(counter) + ").save"):
+		counter += 1
+	return base + " (" + str(counter) + ")"
+
+
 static func format_timestamp(ts: int) -> String:
 	var t: Dictionary = Time.get_datetime_dict_from_unix_time(ts)
 	return "%04d-%02d-%02d %02d:%02d" % [t.year, t.month, t.day, t.hour, t.minute]

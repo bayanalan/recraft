@@ -25,7 +25,7 @@ var _history_idx: int = -1  # -1 = not browsing history
 var _saved_input: String = ""  # what user typed before browsing
 
 # Tab completion data.
-const COMMANDS: Array[String] = ["/time", "/tick", "/gamerule", "/noclip"]
+const COMMANDS: Array[String] = ["/time", "/tick", "/gamerule", "/noclip", "/durability", "/give"]
 const COMPLETIONS: Dictionary = {
 	"/time": ["set"],
 	"/time set": ["day", "night", "noon", "midnight"],
@@ -33,6 +33,7 @@ const COMPLETIONS: Dictionary = {
 	"/gamerule": ["dodaylightcycle"],
 	"/gamerule dodaylightcycle": ["true", "false"],
 	"/noclip": ["true", "false"],
+	"/durability": ["max"],
 }
 
 
@@ -255,6 +256,9 @@ func _get_main() -> Node:
 
 
 func _execute_command(text: String) -> void:
+	if GameConfig.game_mode == GameConfig.GameMode.SURVIVAL and not GameConfig.cheats_enabled:
+		add_message("Commands disabled. Enable cheats at world creation.")
+		return
 	var parts: PackedStringArray = text.strip_edges().split(" ", false)
 	if parts.is_empty():
 		return
@@ -269,6 +273,10 @@ func _execute_command(text: String) -> void:
 			_cmd_gamerule(parts)
 		"/noclip":
 			_cmd_noclip(parts)
+		"/durability":
+			_cmd_durability(parts)
+		"/give":
+			_cmd_give(parts)
 		_:
 			add_message("Unknown command: " + cmd)
 
@@ -353,6 +361,176 @@ func _cmd_noclip(parts: PackedStringArray) -> void:
 	var enabled: bool = val == "true"
 	main.set("noclip", enabled)
 	add_message("Noclip " + ("enabled" if enabled else "disabled"))
+
+
+func _cmd_durability(parts: PackedStringArray) -> void:
+	var hud: Node = get_parent()
+	if hud == null or not "inventory" in hud or not "selected_slot" in hud:
+		add_message("Cannot access inventory")
+		return
+	var inv: Inventory = hud.inventory
+	var slot: int = hud.selected_slot
+	var item_id: int = inv.ids[slot]
+	if item_id == 0:
+		add_message("No item held")
+		return
+	var max_dur: int = Items.get_max_durability(item_id)
+	if max_dur <= 0:
+		add_message("Held item has no durability")
+		return
+	if parts.size() < 2:
+		var cur: int = inv.durabilities[slot]
+		var display: int = max_dur if cur == 0 else cur
+		add_message("Durability: %d / %d  (use /durability <value|max>)" % [display, max_dur])
+		return
+	var arg: String = parts[1].to_lower()
+	var new_dur: int
+	if arg == "max":
+		new_dur = max_dur
+	elif arg.is_valid_int():
+		new_dur = clampi(arg.to_int(), 1, max_dur)
+	else:
+		add_message("Usage: /durability <1-%d | max>" % max_dur)
+		return
+	inv.durabilities[slot] = new_dur if new_dur < max_dur else 0
+	if hud.has_method("_sync_slots_from_inventory"):
+		hud._sync_slots_from_inventory()
+	var shown: int = max_dur if new_dur >= max_dur else new_dur
+	add_message("Set durability to %d / %d" % [shown, max_dur])
+
+
+func _cmd_give(parts: PackedStringArray) -> void:
+	if parts.size() < 2:
+		add_message("Usage: /give <item> [count]")
+		return
+	var hud: Node = get_parent()
+	if hud == null or not "inventory" in hud:
+		add_message("Cannot access inventory")
+		return
+	var inv: Inventory = hud.inventory
+	var query: String = parts[1].to_lower()
+	var count: int = 1
+	if parts.size() >= 3 and parts[2].is_valid_int():
+		count = maxi(1, parts[2].to_int())
+
+	var name_map: Dictionary = _give_name_map()
+
+	# Exact match first, then prefix search
+	var matched_key: String = ""
+	if name_map.has(query):
+		matched_key = query
+	else:
+		var hits: Array[String] = []
+		for k: String in name_map:
+			if k.begins_with(query):
+				hits.append(k)
+		hits.sort()
+		if hits.size() == 1:
+			matched_key = hits[0]
+		elif hits.size() > 1:
+			add_message("Did you mean: " + ", ".join(hits.slice(0, 8)))
+			return
+		else:
+			add_message("Unknown item: " + query)
+			return
+
+	var id: int = name_map[matched_key]
+	var leftover: int = inv.give_item(id, count)
+	if hud.has_method("_sync_slots_from_inventory"):
+		hud._sync_slots_from_inventory()
+	var given: int = count - leftover
+	if given > 0:
+		add_message("Gave %dx %s" % [given, Items.get_item_name(id)])
+	else:
+		add_message("Inventory full")
+
+
+static func _give_name_map() -> Dictionary:
+	var B: Dictionary = {
+		"stone": Chunk.Block.STONE, "cobblestone": Chunk.Block.COBBLESTONE,
+		"brick": Chunk.Block.BRICK, "dirt": Chunk.Block.DIRT,
+		"planks": Chunk.Block.PLANKS, "log": Chunk.Block.LOG,
+		"leaves": Chunk.Block.LEAVES, "glass": Chunk.Block.GLASS,
+		"sand": Chunk.Block.SAND, "grass": Chunk.Block.GRASS,
+		"mossy_cobblestone": Chunk.Block.MOSSY_COBBLESTONE,
+		"bedrock": Chunk.Block.BEDROCK, "obsidian": Chunk.Block.OBSIDIAN,
+		"bookshelf": Chunk.Block.BOOKSHELF, "sponge": Chunk.Block.SPONGE,
+		"tnt": Chunk.Block.TNT,
+		"iron_block": Chunk.Block.IRON_BLOCK, "gold_block": Chunk.Block.GOLD_BLOCK,
+		"diamond_block": Chunk.Block.DIAMOND_BLOCK, "coal_block": Chunk.Block.COAL_BLOCK,
+		"coal_ore": Chunk.Block.COAL_ORE, "iron_ore": Chunk.Block.IRON_ORE,
+		"gold_ore": Chunk.Block.GOLD_ORE, "diamond_ore": Chunk.Block.DIAMOND_ORE,
+		"wool_white": Chunk.Block.WOOL_WHITE, "wool_red": Chunk.Block.WOOL_RED,
+		"wool_yellow": Chunk.Block.WOOL_YELLOW, "wool_green": Chunk.Block.WOOL_GREEN,
+		"wool_blue": Chunk.Block.WOOL_BLUE, "wool_orange": Chunk.Block.WOOL_ORANGE,
+		"wool_magenta": Chunk.Block.WOOL_MAGENTA, "wool_light_blue": Chunk.Block.WOOL_LIGHT_BLUE,
+		"wool_lime": Chunk.Block.WOOL_LIME, "wool_pink": Chunk.Block.WOOL_PINK,
+		"wool_gray": Chunk.Block.WOOL_GRAY, "wool_light_gray": Chunk.Block.WOOL_LIGHT_GRAY,
+		"wool_cyan": Chunk.Block.WOOL_CYAN, "wool_purple": Chunk.Block.WOOL_PURPLE,
+		"wool_brown": Chunk.Block.WOOL_BROWN, "wool_black": Chunk.Block.WOOL_BLACK,
+		"smooth_stone": Chunk.Block.SMOOTH_STONE,
+		"smooth_stone_slab": Chunk.Block.SMOOTH_STONE_SLAB,
+		"barrier": Chunk.Block.BARRIER,
+		"poppy": Chunk.Block.POPPY, "dandelion": Chunk.Block.DANDELION,
+		"torch": Chunk.Block.TORCH,
+		"netherrack": Chunk.Block.NETHERRACK,
+		"nether_gold_ore": Chunk.Block.NETHER_GOLD_ORE,
+		"nether_quartz_ore": Chunk.Block.NETHER_QUARTZ_ORE,
+		"crimson_nylium": Chunk.Block.CRIMSON_NYLIUM,
+		"warped_nylium": Chunk.Block.WARPED_NYLIUM,
+		"crimson_stem": Chunk.Block.CRIMSON_STEM,
+		"warped_stem": Chunk.Block.WARPED_STEM,
+		"nether_wart_block": Chunk.Block.NETHER_WART_BLOCK,
+		"warped_wart_block": Chunk.Block.WARPED_WART_BLOCK,
+		"red_mushroom": Chunk.Block.RED_MUSHROOM,
+		"brown_mushroom": Chunk.Block.BROWN_MUSHROOM,
+		"crimson_fungus": Chunk.Block.CRIMSON_FUNGUS,
+		"warped_fungus": Chunk.Block.WARPED_FUNGUS,
+		"furnace": Chunk.Block.FURNACE,
+		"crafting_table": Chunk.Block.CRAFTING_TABLE,
+		"sapling": Chunk.Block.SAPLING,
+		# Items
+		"coal": Items.COAL, "raw_iron": Items.RAW_IRON, "raw_gold": Items.RAW_GOLD,
+		"diamond": Items.DIAMOND, "stick": Items.STICK, "flint": Items.FLINT,
+		"leather": Items.LEATHER, "apple": Items.APPLE, "bread": Items.BREAD,
+		"quartz": Items.QUARTZ, "oak_sapling": Items.OAK_SAPLING,
+		"restore_orb": Items.RESTORE_ORB,
+		"iron_ingot": Items.IRON_INGOT, "gold_ingot": Items.GOLD_INGOT,
+		# Tools
+		"wood_sword": Items.WOOD_SWORD, "wood_pickaxe": Items.WOOD_PICKAXE,
+		"wood_axe": Items.WOOD_AXE, "wood_shovel": Items.WOOD_SHOVEL,
+		"wood_hoe": Items.WOOD_HOE,
+		"stone_sword": Items.STONE_SWORD, "stone_pickaxe": Items.STONE_PICKAXE,
+		"stone_axe": Items.STONE_AXE, "stone_shovel": Items.STONE_SHOVEL,
+		"stone_hoe": Items.STONE_HOE,
+		"iron_sword": Items.IRON_SWORD, "iron_pickaxe": Items.IRON_PICKAXE,
+		"iron_axe": Items.IRON_AXE, "iron_shovel": Items.IRON_SHOVEL,
+		"iron_hoe": Items.IRON_HOE,
+		"gold_sword": Items.GOLD_SWORD, "gold_pickaxe": Items.GOLD_PICKAXE,
+		"gold_axe": Items.GOLD_AXE, "gold_shovel": Items.GOLD_SHOVEL,
+		"gold_hoe": Items.GOLD_HOE,
+		"diamond_sword": Items.DIAMOND_SWORD, "diamond_pickaxe": Items.DIAMOND_PICKAXE,
+		"diamond_axe": Items.DIAMOND_AXE, "diamond_shovel": Items.DIAMOND_SHOVEL,
+		"diamond_hoe": Items.DIAMOND_HOE,
+		# Armor
+		"leather_helmet": Items.LEATHER_HELMET,
+		"leather_chestplate": Items.LEATHER_CHESTPLATE,
+		"leather_leggings": Items.LEATHER_LEGGINGS,
+		"leather_boots": Items.LEATHER_BOOTS,
+		"iron_helmet": Items.IRON_HELMET,
+		"iron_chestplate": Items.IRON_CHESTPLATE,
+		"iron_leggings": Items.IRON_LEGGINGS,
+		"iron_boots": Items.IRON_BOOTS,
+		"gold_helmet": Items.GOLD_HELMET,
+		"gold_chestplate": Items.GOLD_CHESTPLATE,
+		"gold_leggings": Items.GOLD_LEGGINGS,
+		"gold_boots": Items.GOLD_BOOTS,
+		"diamond_helmet": Items.DIAMOND_HELMET,
+		"diamond_chestplate": Items.DIAMOND_CHESTPLATE,
+		"diamond_leggings": Items.DIAMOND_LEGGINGS,
+		"diamond_boots": Items.DIAMOND_BOOTS,
+	}
+	return B
 
 
 func add_message(text: String) -> void:

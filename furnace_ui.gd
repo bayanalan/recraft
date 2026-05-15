@@ -15,8 +15,22 @@ const FIRE_ON     := Color(0.98, 0.52, 0.10)
 const FIRE_OFF    := Color(0.35, 0.35, 0.35)
 const ARROW_COL   := Color(0.90, 0.75, 0.20)
 
-const SMELT_TIME:     float = 10.0
-const COAL_FUEL_TIME: float = 80.0
+const SMELT_TIME: float = 10.0
+# Fuel burn times in seconds — any item in this dict is valid fuel.
+const FUEL_TIMES: Dictionary = {
+	Items.COAL:              80.0,
+	Items.STICK:              5.0,
+	Chunk.Block.PLANKS:      15.0,
+	Chunk.Block.LOG:         15.0,
+	Chunk.Block.CRIMSON_STEM: 15.0,
+	Chunk.Block.WARPED_STEM: 15.0,
+	Chunk.Block.BOOKSHELF:   15.0,
+	Items.WOOD_PICKAXE:      10.0,
+	Items.WOOD_AXE:          10.0,
+	Items.WOOD_SHOVEL:       10.0,
+	Items.WOOD_HOE:          10.0,
+	Items.WOOD_SWORD:        10.0,
+}
 
 # Smelting recipes: input id -> output id
 const SMELT_RECIPES: Dictionary = {
@@ -33,17 +47,20 @@ var _hud: Node = null
 # The furnace position in the world (used as key for persistent state)
 var furnace_pos: Vector3i = Vector3i.ZERO
 
-# Furnace state
-var input_id:    int = 0
-var input_count: int = 0
-var fuel_id:     int = 0
-var fuel_count:  int = 0
-var output_id:   int = 0
-var output_count: int = 0
-var smelt_time:   float = 0.0   # remaining time for current item
-var fuel_remaining: float = 0.0  # fuel left in seconds
-var _is_smelting: bool = false
-var _smelt_total: float = SMELT_TIME
+# Per-position furnace states — persists across open/close while game runs.
+var _furnace_states: Dictionary = {}
+
+# Live state for the currently open furnace (mirrors _furnace_states[furnace_pos])
+var input_id:       int = 0
+var input_count:    int = 0
+var fuel_id:        int = 0
+var fuel_count:     int = 0
+var output_id:      int = 0
+var output_count:   int = 0
+var smelt_time:     float = 0.0
+var fuel_remaining: float = 0.0
+var _is_smelting:   bool = false
+var _smelt_total:   float = SMELT_TIME
 
 var _cursor_id: int = 0
 var _cursor_count: int = 0
@@ -68,13 +85,16 @@ func _ready() -> void:
 	_atlas = BlockTextures.create_icon_atlas()
 	texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
 	_hud = get_parent()
-	process_mode = Node.PROCESS_MODE_WHEN_PAUSED
+	process_mode = Node.PROCESS_MODE_ALWAYS
 	set_process_input(true)
 	mouse_filter = Control.MOUSE_FILTER_STOP
 
 
 func open(pos: Vector3i) -> void:
+	if visible and pos != furnace_pos:
+		_save_current_state()
 	furnace_pos = pos
+	_load_state(pos)
 	visible = true
 	get_tree().paused = true
 	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
@@ -83,7 +103,7 @@ func open(pos: Vector3i) -> void:
 
 
 func close() -> void:
-	_return_contents()
+	_save_current_state()
 	_drop_cursor()
 	visible = false
 	if get_tree().paused:
@@ -91,23 +111,58 @@ func close() -> void:
 	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
 
 
-func _return_contents() -> void:
-	var inv: Inventory = _get_inv()
-	if inv == null:
-		return
-	if input_id != 0:
-		inv.give_item(input_id, input_count)
+func _save_current_state() -> void:
+	_furnace_states[furnace_pos] = {
+		"input_id": input_id, "input_count": input_count,
+		"fuel_id": fuel_id, "fuel_count": fuel_count,
+		"output_id": output_id, "output_count": output_count,
+		"smelt_time": smelt_time, "fuel_remaining": fuel_remaining,
+		"is_smelting": _is_smelting, "smelt_total": _smelt_total,
+	}
+
+
+func _load_state(pos: Vector3i) -> void:
+	if not _furnace_states.has(pos):
 		input_id = 0; input_count = 0
-	if fuel_id != 0:
-		inv.give_item(fuel_id, fuel_count)
 		fuel_id = 0; fuel_count = 0
-	if output_id != 0:
-		inv.give_item(output_id, output_count)
 		output_id = 0; output_count = 0
-	smelt_time = 0.0
-	_is_smelting = false
-	if _hud != null and _hud.has_method("_sync_slots_from_inventory"):
-		_hud._sync_slots_from_inventory()
+		smelt_time = 0.0; fuel_remaining = 0.0
+		_is_smelting = false; _smelt_total = SMELT_TIME
+		return
+	var s: Dictionary = _furnace_states[pos]
+	input_id = s.get("input_id", 0); input_count = s.get("input_count", 0)
+	fuel_id = s.get("fuel_id", 0); fuel_count = s.get("fuel_count", 0)
+	output_id = s.get("output_id", 0); output_count = s.get("output_count", 0)
+	smelt_time = s.get("smelt_time", 0.0); fuel_remaining = s.get("fuel_remaining", 0.0)
+	_is_smelting = s.get("is_smelting", false); _smelt_total = s.get("smelt_total", SMELT_TIME)
+
+
+## Called when the furnace BLOCK is broken: return contents as item drops.
+## Returns Array of [item_id, count] pairs for the caller to spawn as drops.
+func take_contents_on_break(pos: Vector3i) -> Array:
+	var drops: Array = []
+	var s: Dictionary
+	if visible and pos == furnace_pos:
+		s = {
+			"input_id": input_id, "input_count": input_count,
+			"fuel_id": fuel_id, "fuel_count": fuel_count,
+			"output_id": output_id, "output_count": output_count,
+		}
+		input_id = 0; input_count = 0; fuel_id = 0; fuel_count = 0
+		output_id = 0; output_count = 0; _is_smelting = false; smelt_time = 0.0
+		_furnace_states.erase(pos)
+	elif _furnace_states.has(pos):
+		s = _furnace_states[pos]
+		_furnace_states.erase(pos)
+	else:
+		return drops
+	if s.get("input_id", 0) != 0:
+		drops.append([s["input_id"], s.get("input_count", 1)])
+	if s.get("fuel_id", 0) != 0:
+		drops.append([s["fuel_id"], s.get("fuel_count", 1)])
+	if s.get("output_id", 0) != 0:
+		drops.append([s["output_id"], s.get("output_count", 1)])
+	return drops
 
 
 func _drop_cursor() -> void:
@@ -121,32 +176,44 @@ func _drop_cursor() -> void:
 
 
 func _process(delta: float) -> void:
-	if not visible:
+	# Tick all background furnace states (those not currently open)
+	for pos: Vector3i in _furnace_states:
+		if visible and pos == furnace_pos:
+			continue
+		_tick_state(_furnace_states[pos], delta)
+	# Tick the open furnace via local vars
+	if visible:
+		_tick(delta)
+		queue_redraw()
+
+
+## Attempt to start (or resume) smelting immediately. Consumes one fuel item
+## right now if needed so there is no window to take it back.
+func _try_start_smelting() -> void:
+	if _is_smelting:
 		return
-	_tick(delta)
-	queue_redraw()
+	if input_id == 0 or not SMELT_RECIPES.has(input_id):
+		return
+	if fuel_remaining > 0.0:
+		_is_smelting = true
+		smelt_time = SMELT_TIME
+		_smelt_total = SMELT_TIME
+		return
+	if FUEL_TIMES.has(fuel_id) and fuel_count > 0:
+		var ft: float = FUEL_TIMES[fuel_id]
+		fuel_count -= 1
+		if fuel_count == 0: fuel_id = 0
+		fuel_remaining = ft
+		_is_smelting = true
+		smelt_time = SMELT_TIME
+		_smelt_total = SMELT_TIME
 
 
 func _tick(delta: float) -> void:
 	if not _is_smelting:
-		# Try to start smelting
-		if input_id != 0 and SMELT_RECIPES.has(input_id) and fuel_remaining <= 0.0:
-			# Need fuel
-			if fuel_id == Items.COAL and fuel_count > 0:
-				fuel_count -= 1
-				if fuel_count == 0:
-					fuel_id = 0
-				fuel_remaining = COAL_FUEL_TIME
-				_is_smelting = true
-				smelt_time = SMELT_TIME
-				_smelt_total = SMELT_TIME
-		elif input_id != 0 and SMELT_RECIPES.has(input_id) and fuel_remaining > 0.0:
-			_is_smelting = true
-			smelt_time = SMELT_TIME
-			_smelt_total = SMELT_TIME
+		_try_start_smelting()
 		return
 
-	# Already smelting
 	if input_id == 0 or not SMELT_RECIPES.has(input_id):
 		_is_smelting = false
 		smelt_time = 0.0
@@ -156,7 +223,6 @@ func _tick(delta: float) -> void:
 	smelt_time = maxf(0.0, smelt_time - delta)
 
 	if smelt_time <= 0.0:
-		# Finish smelting one item
 		var result_id: int = SMELT_RECIPES.get(input_id, 0)
 		if result_id != 0:
 			var ms: int = Items.get_max_stack(result_id)
@@ -165,21 +231,82 @@ func _tick(delta: float) -> void:
 				output_count += 1
 				input_count -= 1
 				if input_count <= 0:
-					input_id = 0
-					input_count = 0
+					input_id = 0; input_count = 0
 		_is_smelting = false
 		smelt_time = 0.0
 
-		# Refuel if possible and input remains
 		if input_id != 0 and SMELT_RECIPES.has(input_id):
-			if fuel_remaining <= 0.0 and fuel_id == Items.COAL and fuel_count > 0:
+			if fuel_remaining <= 0.0 and FUEL_TIMES.has(fuel_id) and fuel_count > 0:
+				var ft: float = FUEL_TIMES[fuel_id]
 				fuel_count -= 1
 				if fuel_count == 0: fuel_id = 0
-				fuel_remaining = COAL_FUEL_TIME
+				fuel_remaining = ft
 			if fuel_remaining > 0.0:
 				_is_smelting = true
 				smelt_time = SMELT_TIME
 				_smelt_total = SMELT_TIME
+
+
+func _tick_state(s: Dictionary, delta: float) -> void:
+	if not s.get("is_smelting", false):
+		var in_id: int = s.get("input_id", 0)
+		if in_id == 0 or not SMELT_RECIPES.has(in_id):
+			return
+		if s.get("fuel_remaining", 0.0) <= 0.0:
+			var f_id: int = s.get("fuel_id", 0)
+			var f_cnt: int = s.get("fuel_count", 0)
+			if FUEL_TIMES.has(f_id) and f_cnt > 0:
+				var ft: float = FUEL_TIMES[f_id]
+				s["fuel_count"] = f_cnt - 1
+				if s["fuel_count"] == 0: s["fuel_id"] = 0
+				s["fuel_remaining"] = ft
+				s["is_smelting"] = true
+				s["smelt_time"] = SMELT_TIME
+				s["smelt_total"] = SMELT_TIME
+		else:
+			s["is_smelting"] = true
+			s["smelt_time"] = SMELT_TIME
+			s["smelt_total"] = SMELT_TIME
+		return
+
+	var in_id: int = s.get("input_id", 0)
+	if in_id == 0 or not SMELT_RECIPES.has(in_id):
+		s["is_smelting"] = false
+		s["smelt_time"] = 0.0
+		return
+
+	s["fuel_remaining"] = maxf(0.0, s.get("fuel_remaining", 0.0) - delta)
+	s["smelt_time"] = maxf(0.0, s.get("smelt_time", 0.0) - delta)
+
+	if s["smelt_time"] <= 0.0:
+		var result_id: int = SMELT_RECIPES.get(in_id, 0)
+		if result_id != 0:
+			var ms: int = Items.get_max_stack(result_id)
+			var out_id: int = s.get("output_id", 0)
+			var out_cnt: int = s.get("output_count", 0)
+			if out_cnt < ms and (out_id == result_id or out_id == 0):
+				s["output_id"] = result_id
+				s["output_count"] = out_cnt + 1
+				s["input_count"] = s.get("input_count", 0) - 1
+				if s["input_count"] <= 0:
+					s["input_id"] = 0; s["input_count"] = 0
+		s["is_smelting"] = false
+		s["smelt_time"] = 0.0
+
+		in_id = s.get("input_id", 0)
+		if in_id != 0 and SMELT_RECIPES.has(in_id):
+			if s.get("fuel_remaining", 0.0) <= 0.0:
+				var f_id: int = s.get("fuel_id", 0)
+				var f_cnt: int = s.get("fuel_count", 0)
+				if FUEL_TIMES.has(f_id) and f_cnt > 0:
+					var ft: float = FUEL_TIMES[f_id]
+					s["fuel_count"] = f_cnt - 1
+					if s["fuel_count"] == 0: s["fuel_id"] = 0
+					s["fuel_remaining"] = ft
+			if s.get("fuel_remaining", 0.0) > 0.0:
+				s["is_smelting"] = true
+				s["smelt_time"] = SMELT_TIME
+				s["smelt_total"] = SMELT_TIME
 
 
 func _compute_layout() -> void:
@@ -341,7 +468,7 @@ func _draw_item_at(cx: float, cy: float, id: int, count: int) -> void:
 	if Items.is_block(id):
 		BlockIcon.draw_iso(self, _atlas, cx, cy, BLOCK_S, id)
 	else:
-		Items.draw_item_icon(self, cx, cy + BLOCK_S * BlockIcon.CUBE_H * 0.5, BLOCK_S * 2.0, id)
+		Items.draw_item_icon(self, cx, cy + BLOCK_S * BlockIcon.CUBE_H * 0.5, BLOCK_S * 1.0, id)
 	if count > 1:
 		var font: Font = ThemeDB.fallback_font
 		draw_string(font, Vector2(cx + 8, cy + BLOCK_S * BlockIcon.CUBE_H + 14),
@@ -450,6 +577,7 @@ func _handle_left_click(slot: int, inv: Inventory, shift: bool) -> void:
 				var ti: int = input_id; var tc: int = input_count
 				input_id = _cursor_id; input_count = _cursor_count
 				_cursor_id = ti; _cursor_count = tc
+		_try_start_smelting()
 		return
 
 	if slot == S_FUEL:
@@ -473,6 +601,7 @@ func _handle_left_click(slot: int, inv: Inventory, shift: bool) -> void:
 				var ti: int = fuel_id; var tc: int = fuel_count
 				fuel_id = _cursor_id; fuel_count = _cursor_count
 				_cursor_id = ti; _cursor_count = tc
+		_try_start_smelting()
 		return
 
 	var inv_slot: int = _resolve_inv_slot(slot)

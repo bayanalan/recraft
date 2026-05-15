@@ -20,8 +20,6 @@ static func _ensure_init() -> void:
 	var Ir: int = Items.IRON_INGOT
 	var Go: int = Items.GOLD_INGOT
 	var Di: int = Items.DIAMOND
-	var Le: int = Items.LEATHER
-
 	# --- 2x2 shapeless / shaped recipes ---
 
 	# Log -> 4 Planks (shapeless: any single log)
@@ -73,12 +71,6 @@ static func _ensure_init() -> void:
 	_recipes.append([3, [0, Di, 0, 0, S, 0, 0, S, 0], Items.DIAMOND_SHOVEL, 1])
 	_recipes.append([3, [Di, Di, 0, 0, S, 0, 0, S, 0], Items.DIAMOND_HOE, 1])
 
-	# --- Armor: Leather ---
-	_recipes.append([3, [Le, Le, Le, Le, 0, Le, 0, 0, 0], Items.LEATHER_HELMET, 1])
-	_recipes.append([3, [Le, 0, Le, Le, Le, Le, Le, Le, Le], Items.LEATHER_CHESTPLATE, 1])
-	_recipes.append([3, [Le, Le, Le, Le, 0, Le, Le, 0, Le], Items.LEATHER_LEGGINGS, 1])
-	_recipes.append([3, [0, 0, 0, Le, 0, Le, Le, 0, Le], Items.LEATHER_BOOTS, 1])
-
 	# --- Armor: Iron ---
 	_recipes.append([3, [Ir, Ir, Ir, Ir, 0, Ir, 0, 0, 0], Items.IRON_HELMET, 1])
 	_recipes.append([3, [Ir, 0, Ir, Ir, Ir, Ir, Ir, Ir, Ir], Items.IRON_CHESTPLATE, 1])
@@ -97,18 +89,33 @@ static func _ensure_init() -> void:
 	_recipes.append([3, [Di, Di, Di, Di, 0, Di, Di, 0, Di], Items.DIAMOND_LEGGINGS, 1])
 	_recipes.append([3, [0, 0, 0, Di, 0, Di, Di, 0, Di], Items.DIAMOND_BOOTS, 1])
 
+	var Cl: int = Items.COAL
+	var IrB: int = Chunk.Block.IRON_BLOCK
+	var GoB: int = Chunk.Block.GOLD_BLOCK
+	var DiB: int = Chunk.Block.DIAMOND_BLOCK
+	var ClB: int = Chunk.Block.COAL_BLOCK
+
 	# --- Blocks ---
 	# 8 cobblestone -> furnace
 	_recipes.append([3, [Co, Co, Co, Co, 0, Co, Co, Co, Co], Chunk.Block.FURNACE, 1])
-	# 9 iron ingot -> iron block (4 ingots in a 2x2 pattern in a 3x3)
-	_recipes.append([3, [Ir, Ir, 0, Ir, Ir, 0, 0, 0, 0], Chunk.Block.IRON_BLOCK, 1])
-	# 9 gold ingot -> gold block
-	_recipes.append([3, [Go, Go, 0, Go, Go, 0, 0, 0, 0], Chunk.Block.GOLD_BLOCK, 1])
+	# 9 material -> compressed block
+	_recipes.append([3, [Ir, Ir, Ir, Ir, Ir, Ir, Ir, Ir, Ir], Chunk.Block.IRON_BLOCK, 1])
+	_recipes.append([3, [Go, Go, Go, Go, Go, Go, Go, Go, Go], Chunk.Block.GOLD_BLOCK, 1])
+	_recipes.append([3, [Di, Di, Di, Di, Di, Di, Di, Di, Di], Chunk.Block.DIAMOND_BLOCK, 1])
+	_recipes.append([3, [Cl, Cl, Cl, Cl, Cl, Cl, Cl, Cl, Cl], Chunk.Block.COAL_BLOCK, 1])
+	# Reverse: 1 block -> 9 material
+	_recipes.append([2, [IrB, 0, 0, 0], Items.IRON_INGOT, 9])
+	_recipes.append([2, [GoB, 0, 0, 0], Items.GOLD_INGOT, 9])
+	_recipes.append([2, [DiB, 0, 0, 0], Items.DIAMOND, 9])
+	_recipes.append([2, [ClB, 0, 0, 0], Items.COAL, 9])
+
+	# Restore Orb: gold blocks at corners, logs on sides, diamond block at center
+	_recipes.append([3, [GoB, L, GoB, L, DiB, L, GoB, L, GoB], Items.RESTORE_ORB, 1])
 
 
 ## Normalize a grid to its bounding box — removes leading/trailing empty rows and
 ## columns so the pattern can match regardless of where it's placed in the grid.
-static func _normalize(grid: Array[int], grid_size: int) -> Array:
+static func _normalize(grid: Array, grid_size: int) -> Array:
 	var min_r: int = grid_size
 	var max_r: int = -1
 	var min_c: int = grid_size
@@ -133,7 +140,7 @@ static func _normalize(grid: Array[int], grid_size: int) -> Array:
 
 ## Try to match the player's crafting grid against all recipes.
 ## Returns {id, count} or empty dict.
-static func match_recipe(grid: Array[int], grid_size: int) -> Dictionary:
+static func match_recipe(grid: Array, grid_size: int) -> Dictionary:
 	_ensure_init()
 	var norm_result: Array = _normalize(grid, grid_size)
 	var norm_grid: Array = norm_result[0]
@@ -174,8 +181,20 @@ static func match_recipe(grid: Array[int], grid_size: int) -> Dictionary:
 		else:
 			if _exact_match(norm_grid, r_norm):
 				return {"id": r_out, "count": r_count}
+			# Also accept the horizontally mirrored layout (e.g. left-hand axe).
+			if g_cols > 1 and _exact_match(_mirror_h(norm_grid, g_rows, g_cols), r_norm):
+				return {"id": r_out, "count": r_count}
 
 	return {}
+
+
+static func _mirror_h(pattern: Array, rows: int, cols: int) -> Array:
+	var out: Array[int] = []
+	out.resize(pattern.size())
+	for r: int in rows:
+		for c: int in cols:
+			out[r * cols + c] = pattern[r * cols + (cols - 1 - c)]
+	return out
 
 
 static func _exact_match(a: Array, b: Array) -> bool:
@@ -202,7 +221,7 @@ static func _shapeless_match(grid_norm: Array, recipe_norm: Array) -> bool:
 
 ## Return the list of ingredients consumed (as [[id, count]] pairs) for the
 ## given grid, or empty if no recipe matches. Used by UIs to verify crafting.
-static func get_ingredients(grid: Array[int], grid_size: int) -> Array:
+static func get_ingredients(grid: Array, grid_size: int) -> Array:
 	var result: Dictionary = match_recipe(grid, grid_size)
 	if result.is_empty():
 		return []

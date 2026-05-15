@@ -84,6 +84,9 @@ enum Block {
 	# Survival mode functional blocks.
 	FURNACE = 64,
 	CRAFTING_TABLE = 65,
+	COAL_BLOCK = 66,
+	# Player-placed sapling — grows into an oak tree.
+	SAPLING = 67,
 }
 
 # Face direction constants
@@ -454,6 +457,8 @@ static func _tile_index(block_type: int, face_dir: int) -> float:
 			return 70.0 if face_dir == DIR_ZN or face_dir == DIR_ZP or face_dir == DIR_XP or face_dir == DIR_XN else 0.0
 		Block.CRAFTING_TABLE:
 			return 71.0 if face_dir == DIR_YP else 4.0
+		Block.COAL_BLOCK: return 72.0
+		Block.SAPLING: return 7.0  # reuse LEAVES tile as sprite
 		Block.WORLD_BEDROCK: return 13.0  # same texture as BEDROCK
 		Block.WATER: return 32.0
 	return 0.0
@@ -473,7 +478,7 @@ static func _is_opaque_neighbor(b: int) -> bool:
 		return false
 	if b == Block.SMOOTH_STONE_SLAB:
 		return false
-	if b == Block.POPPY or b == Block.DANDELION or b == Block.TORCH:
+	if b == Block.POPPY or b == Block.DANDELION or b == Block.TORCH or b == Block.SAPLING:
 		return false
 	if b == Block.RED_MUSHROOM or b == Block.BROWN_MUSHROOM \
 			or b == Block.CRIMSON_FUNGUS or b == Block.WARPED_FUNGUS:
@@ -823,7 +828,8 @@ static func _is_solid_for_torch(b: int) -> bool:
 static func _is_plant(b: int) -> bool:
 	return b == Block.FIRE or b == Block.POPPY or b == Block.DANDELION or b == Block.TORCH \
 		or b == Block.RED_MUSHROOM or b == Block.BROWN_MUSHROOM \
-		or b == Block.CRIMSON_FUNGUS or b == Block.WARPED_FUNGUS
+		or b == Block.CRIMSON_FUNGUS or b == Block.WARPED_FUNGUS \
+		or b == Block.SAPLING
 
 
 func _write_face(slot_start: int, bx: int, by: int, bz: int, face_dir: int, block_type: int, ao: PackedFloat32Array, water_corners: PackedFloat32Array = PackedFloat32Array(), connect_mask: int = 0) -> void:

@@ -1,5 +1,6 @@
-class_name Player
 extends CharacterBody3D
+
+class_name Player
 
 ## Fires whenever the player attempts a break (LMB) or place (RMB). Emitted
 ## on the press edge even if the raycast misses, so the held-item swing
@@ -17,6 +18,7 @@ signal interacted_with_block(block_type: int, position: Vector3i)
 const MOUSE_SENS_BASE: float = 0.002
 var mouse_sens: float = MOUSE_SENS_BASE
 const PITCH_LIMIT: float = 1.5533
+var _pitch: float = 0.0
 
 # Minecraft-like movement with momentum
 const WALK_SPEED: float = 4.317
@@ -42,6 +44,8 @@ const CROUCH_SMOOTH_RATE: float = 14.0
 # Hold LMB/RMB to continuously break/place. Cooldown matches Minecraft
 # creative-mode pacing (~5 actions/sec when holding).
 const ACTION_COOLDOWN: float = 0.20
+# How often the swing repeats while mining (seconds between swings).
+const SWING_REPEAT: float = 0.25
 # Short grace after re-capturing the mouse so the click that re-captured
 # doesn't also immediately fire a break/place.
 const CAPTURE_GRACE: float = 0.15
@@ -65,11 +69,16 @@ var _place_cooldown: float = 0.0
 var _capture_cooldown: float = 0.0
 var _lmb_held_last: bool = false
 var _rmb_held_last: bool = false
+var _swing_timer: float = 0.0
+var _cached_atlas: ImageTexture = null
+var _q_held: bool = false
+var _q_drop_timer: float = 0.0
 
 # Mining state (survival only)
 var _mining_pos: Vector3i = Vector3i(-999999, -999999, -999999)
 var _mine_progress: float = 0.0
 var _mine_required: float = 0.0
+var _mining_tool: int = -1  # held item when _mine_required was last calculated
 
 # Flying (Minecraft creative style). Toggled by double-tapping Space.
 # Gated by the `Enable Flying` settings toggle so the user can disable the
@@ -158,8 +167,9 @@ func _unhandled_input(event: InputEvent) -> void:
 		return
 	if event is InputEventMouseMotion and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED:
 		head.rotate_y(-event.relative.x * mouse_sens)
-		camera.rotate_x(-event.relative.y * mouse_sens)
-		camera.rotation.x = clampf(camera.rotation.x, -PITCH_LIMIT, PITCH_LIMIT)
+		_pitch -= event.relative.y * mouse_sens
+		_pitch = clampf(_pitch, -PITCH_LIMIT, PITCH_LIMIT)
+		camera.rotation.x = _pitch
 		get_viewport().set_input_as_handled()
 
 	if event is InputEventMouseButton and event.pressed:
@@ -197,6 +207,15 @@ func _unhandled_input(event: InputEvent) -> void:
 					hud.set_selected_block(block)
 			get_viewport().set_input_as_handled()
 
+	if event is InputEventKey and event.keycode == KEY_Q:
+		if event.pressed and not event.echo:
+			_throw_held_item()
+			_q_held = true
+			_q_drop_timer = 0.35
+		elif not event.pressed:
+			_q_held = false
+		get_viewport().set_input_as_handled()
+
 
 ## Get the player's axis-aligned bounding box in world space.
 ## Used to prevent placing blocks inside the player. global_position is at the
@@ -216,6 +235,11 @@ func _physics_process(delta: float) -> void:
 	_break_cooldown = maxf(0.0, _break_cooldown - delta)
 	_place_cooldown = maxf(0.0, _place_cooldown - delta)
 	_capture_cooldown = maxf(0.0, _capture_cooldown - delta)
+	if _q_held and not chat_open:
+		_q_drop_timer -= delta
+		if _q_drop_timer <= 0.0:
+			_throw_held_item()
+			_q_drop_timer = 0.15
 	var lmb: bool = Input.is_mouse_button_pressed(MOUSE_BUTTON_LEFT) and not chat_open
 	var rmb: bool = Input.is_mouse_button_pressed(MOUSE_BUTTON_RIGHT) and not chat_open
 	var is_survival: bool = GameConfig.game_mode == GameConfig.GameMode.SURVIVAL
@@ -224,6 +248,10 @@ func _physics_process(delta: float) -> void:
 		var rmb_edge: bool = rmb and not _rmb_held_last
 
 		if lmb:
+			# Always swing on first click frame, regardless of what's targeted.
+			if lmb_edge:
+				action_performed.emit("swing")
+				_swing_timer = SWING_REPEAT
 			var ray_origin: Vector3 = camera.global_position
 			var ray_dir: Vector3 = -camera.global_basis.z
 			if is_survival:
@@ -231,23 +259,47 @@ func _physics_process(delta: float) -> void:
 				var target: Dictionary = world.raycast_voxel(ray_origin, ray_dir)
 				if target.get("hit", false):
 					var tpos: Vector3i = target["position"]
+					var held_now: int = hud.get_selected_block() if hud != null else 0
 					if tpos != _mining_pos:
-						_mining_pos = tpos
 						_mine_progress = 0.0
+					if tpos != _mining_pos or held_now != _mining_tool:
+						_mining_pos = tpos
+						_mining_tool = held_now
 						_mine_required = _get_block_hardness(target["block"], hud)
 					_mine_progress += delta
+					# Periodic swing while actively mining a block.
+					_swing_timer -= delta
+					if _swing_timer <= 0.0:
+						_swing_timer = SWING_REPEAT
+						action_performed.emit("swing")
+					if block_outline != null:
+						var ratio: float = _mine_progress / _mine_required if _mine_required > 0.0 else 1.0
+						block_outline.set_break_progress(minf(ratio, 1.0))
 					if _mine_required <= 0.0 or _mine_progress >= _mine_required:
-						var result: Dictionary = world.break_block(ray_origin, ray_dir)
-						if result.get("hit", false) and hud != null:
+						var held: int = hud.get_selected_block() if hud != null else 0
+						var result: Dictionary = world.break_block(ray_origin, ray_dir, held)
+						if result.get("hit", false):
+							var drop_pos: Vector3 = Vector3(result.get("position", Vector3i.ZERO)) + Vector3(0.5, 0.5, 0.5)
+							var tier_ok: bool = _meets_tier_requirement(target["block"], held)
 							for drop: Array in result.get("drops", []):
-								if drop.size() >= 2:
-									hud.give_item(drop[0], drop[1])
+								if drop.size() >= 2 and tier_ok:
+									_spawn_item_drop(drop_pos, drop[0], drop[1])
+							# Apply tool durability on successful block break
+							if hud != null and is_survival and (held >= 220 and held <= 244):
+								var double_pen: bool = _is_wrong_tool_type(target["block"], held)
+								hud.inventory.use_tool(hud.selected_slot, double_pen)
+								hud._sync_slots_from_inventory()
 						_mining_pos = Vector3i(-999999, -999999, -999999)
+						_mining_tool = -1
 						_mine_progress = 0.0
+						if block_outline != null:
+							block_outline.set_break_progress(0.0)
 						action_performed.emit("break")
 				else:
 					_mining_pos = Vector3i(-999999, -999999, -999999)
 					_mine_progress = 0.0
+					if block_outline != null:
+						block_outline.set_break_progress(0.0)
 			else:
 				# Creative: instant break, auto-repeat.
 				if lmb_edge or _break_cooldown <= 0.0:
@@ -260,7 +312,11 @@ func _physics_process(delta: float) -> void:
 					action_performed.emit("break")
 		else:
 			_mining_pos = Vector3i(-999999, -999999, -999999)
+			_mining_tool = -1
 			_mine_progress = 0.0
+			_swing_timer = 0.0
+			if block_outline != null:
+				block_outline.set_break_progress(0.0)
 
 		if rmb and (rmb_edge or _place_cooldown <= 0.0):
 			var ray_origin: Vector3 = camera.global_position
@@ -275,6 +331,40 @@ func _physics_process(delta: float) -> void:
 				var block_type: int = hud.get_selected_block() if hud != null else Chunk.Block.STONE
 				if block_type == 0:
 					pass  # empty slot — nothing to place
+				elif block_type == Items.APPLE and is_survival and rmb_edge:
+					# Eat apple: restore 4 HP
+					if health < max_health and hud != null:
+						health = mini(health + 4, max_health)
+						hud.inventory.take_from_slot(hud.selected_slot, 1)
+						hud._sync_slots_from_inventory()
+						if hud.has_method("update_health"):
+							hud.update_health(health)
+						_place_cooldown = ACTION_COOLDOWN
+				elif block_type == Items.RESTORE_ORB and rmb_edge:
+					# Use restore orb: restore all ores and consume orb
+					world.restore_ores()
+					if is_survival and hud != null:
+						hud.inventory.take_from_slot(hud.selected_slot, 1)
+						hud._sync_slots_from_inventory()
+					_place_cooldown = ACTION_COOLDOWN
+				elif block_type == Items.OAK_SAPLING and rmb_edge:
+					# Plant sapling on dirt or grass surface
+					var hit: Dictionary = world.raycast_voxel(ray_origin, ray_dir)
+					if hit.get("hit", false):
+						var hit_pos: Vector3i = hit["position"]
+						var hit_normal: Vector3i = hit["normal"]
+						var place_pos: Vector3i = hit_pos + hit_normal
+						var below: int = world.get_voxel(hit_pos.x, hit_pos.y, hit_pos.z)
+						if (below == Chunk.Block.DIRT or below == Chunk.Block.GRASS) \
+								and hit_normal == Vector3i(0, 1, 0) \
+								and world.get_voxel(place_pos.x, place_pos.y, place_pos.z) == Chunk.Block.AIR:
+							world.set_voxel(place_pos.x, place_pos.y, place_pos.z, Chunk.Block.SAPLING)
+							world.add_sapling(place_pos)
+							if is_survival and hud != null:
+								hud.inventory.take_from_slot(hud.selected_slot, 1)
+								hud._sync_slots_from_inventory()
+							_place_cooldown = ACTION_COOLDOWN
+							action_performed.emit("place")
 				elif Items.is_item(block_type):
 					pass  # non-placeable item
 				else:
@@ -288,10 +378,10 @@ func _physics_process(delta: float) -> void:
 	_lmb_held_last = lmb
 	_rmb_held_last = rmb
 
-	# Double-tap Space → toggle flying (Minecraft creative).
-	# Disabled by the settings toggle? Then skip the double-tap logic
-	# entirely — Space stays a plain jump.
-	if not chat_open and flying_enabled and Input.is_action_just_pressed(&"jump"):
+	# Double-tap Space → toggle flying (creative only — disabled in survival).
+	if not chat_open and flying_enabled \
+			and GameConfig.game_mode != GameConfig.GameMode.SURVIVAL \
+			and Input.is_action_just_pressed(&"jump"):
 		var now: float = Time.get_ticks_msec() / 1000.0
 		if now - _last_jump_time < DOUBLE_JUMP_WINDOW:
 			is_flying = not is_flying
@@ -443,17 +533,24 @@ func _physics_process(delta: float) -> void:
 
 	# Damage tilt spring
 	if not is_equal_approx(_damage_tilt, 0.0) or not is_equal_approx(_damage_tilt_vel, 0.0):
-		_damage_tilt_vel -= _damage_tilt * 15.0 * delta
-		_damage_tilt_vel *= 1.0 - 8.0 * delta
+		_damage_tilt_vel -= _damage_tilt * 110.0 * delta
+		_damage_tilt_vel *= 1.0 - 42.0 * delta
 		_damage_tilt += _damage_tilt_vel * delta
-		if absf(_damage_tilt) < 0.05 and absf(_damage_tilt_vel) < 0.05:
+		if absf(_damage_tilt) < 0.3 and absf(_damage_tilt_vel) < 0.3:
 			_damage_tilt = 0.0
 			_damage_tilt_vel = 0.0
 		camera.rotation.z = deg_to_rad(_damage_tilt)
 	elif camera.rotation.z != 0.0:
 		camera.rotation.z = 0.0
 
+	var _pre_slide_pos := global_position
 	move_and_slide()
+	# After sliding, if crouching caused a wall-corner deflection that pushed
+	# the player off the block edge, revert to the pre-slide position.
+	if is_crouching and on_floor and not _has_ground_support(global_position.x, global_position.z):
+		global_position = _pre_slide_pos
+		velocity.x = 0.0
+		velocity.z = 0.0
 
 	# Block outline raycast — ran at 60 Hz (physics rate) rather than render
 	# rate to avoid per-frame dict lookups at 1500+ fps.
@@ -547,9 +644,10 @@ func _apply_crouch_ledge_safety() -> void:
 	if under_b == Chunk.Block.SMOOTH_STONE_SLAB:
 		return
 
-	# Look-ahead constant comfortably longer than one physics tick of travel
-	# at sneak speed, so the player stops well before committing to a fall.
-	const LOOK_AHEAD: float = 0.12
+	# Look-ahead large enough that at sneak speed (1.3 u/s) the probed position
+	# is 0.52 units ahead — safety fires when player center is still ~0.22 u
+	# INSIDE the block edge, before is_on_floor() can drop to false.
+	const LOOK_AHEAD: float = 0.4
 	var fx: float = global_position.x + velocity.x * LOOK_AHEAD
 	var fz: float = global_position.z + velocity.z * LOOK_AHEAD
 	if _has_ground_support(fx, fz):
@@ -594,7 +692,8 @@ func _is_solid_support(b: int) -> bool:
 		return false
 	if b == Chunk.Block.FIRE:
 		return false
-	if b == Chunk.Block.DANDELION or b == Chunk.Block.POPPY or b == Chunk.Block.TORCH:
+	if b == Chunk.Block.DANDELION or b == Chunk.Block.POPPY or b == Chunk.Block.TORCH \
+			or b == Chunk.Block.SAPLING:
 		return false
 	if b == Chunk.Block.RED_MUSHROOM or b == Chunk.Block.BROWN_MUSHROOM \
 			or b == Chunk.Block.CRIMSON_FUNGUS or b == Chunk.Block.WARPED_FUNGUS:
@@ -611,6 +710,8 @@ func _voxel_at(x: float, y: float, z: float) -> int:
 
 
 func take_damage(amount: int) -> void:
+	if GameConfig.game_mode == GameConfig.GameMode.CREATIVE:
+		return
 	if invincible_timer > 0.0:
 		return
 	var armor_reduction: float = 0.0
@@ -621,7 +722,14 @@ func take_damage(amount: int) -> void:
 	actual = maxi(1, actual)
 	health = maxi(0, health - actual)
 	invincible_timer = 0.5
-	_damage_tilt_vel = 25.0 * (1.0 if randi() % 2 == 0 else -1.0)
+	_damage_tilt_vel = 110.0 * (1.0 if randi() % 2 == 0 else -1.0)
+	# Each equipped armor piece loses 1 durability when player takes damage
+	if hud != null and "inventory" in hud:
+		var inv: Inventory = hud.inventory
+		if inv != null:
+			for ai: int in 4:
+				if inv.armor_ids[ai] != 0:
+					inv.use_armor(ai)
 	if hud != null and hud.has_method("update_health"):
 		hud.update_health(health)
 	if health <= 0:
@@ -635,66 +743,196 @@ func _on_death() -> void:
 	velocity = Vector3.ZERO
 	_damage_tilt = 0.0
 	_damage_tilt_vel = 0.0
+	_pitch = 0.0
+	camera.rotation.x = 0.0
 	camera.rotation.z = 0.0
 	if hud != null and hud.has_method("update_health"):
 		hud.update_health(health)
 
 
+## Spawn a physical item drop entity at `world_pos` for survival mode.
+func _spawn_item_drop(world_pos: Vector3, item_id: int, count: int) -> void:
+	if _cached_atlas == null:
+		_cached_atlas = BlockTextures.create_atlas()
+	var drop := ItemDrop.new()
+	get_parent().add_child(drop)
+	drop.global_position = world_pos
+	drop.setup(item_id, count, _cached_atlas, world, self)
+
+
+func _throw_held_item() -> void:
+	if hud == null or world == null:
+		return
+	var inv: Inventory = hud.get("inventory") as Inventory
+	if inv == null:
+		return
+	var slot: int = hud.selected_slot if "selected_slot" in hud else 0
+	if slot >= inv.ids.size() or inv.ids[slot] == 0:
+		return
+	var thrown_id: int = inv.ids[slot]
+	var is_creative: bool = GameConfig.game_mode == GameConfig.GameMode.CREATIVE
+	if not is_creative:
+		inv.counts[slot] -= 1
+		if inv.counts[slot] <= 0:
+			inv.ids[slot] = 0
+			inv.counts[slot] = 0
+		if hud.has_method("_sync_slots_from_inventory"):
+			hud._sync_slots_from_inventory()
+	# Spawn drop just in front of camera with forward throw arc
+	if _cached_atlas == null:
+		_cached_atlas = BlockTextures.create_atlas()
+	var forward: Vector3 = -camera.global_basis.z
+	var throw_pos: Vector3 = camera.global_position + forward * 0.6
+	var throw_vel: Vector3 = forward * 7.0 + Vector3(0.0, 2.5, 0.0)
+	var drop := ItemDrop.new()
+	get_parent().add_child(drop)
+	drop.global_position = throw_pos
+	drop.setup(thrown_id, 1, _cached_atlas, world, self)
+	drop.set_thrown(throw_vel)
+
+
+## Pickaxe tier: -1 = not a pickaxe, 0 = wood, 1 = stone, 2 = iron/gold, 3 = diamond
+static func _pickaxe_tier(id: int) -> int:
+	if id == Items.WOOD_PICKAXE:      return 0
+	if id == Items.STONE_PICKAXE:     return 1
+	if id == Items.IRON_PICKAXE:      return 2
+	if id == Items.GOLD_PICKAXE:      return 2  # gold = iron tier for mining reqs
+	if id == Items.DIAMOND_PICKAXE:   return 3
+	return -1
+
+
+## Minimum pickaxe tier a block requires to yield drops. -1 = no requirement.
+static func _required_tier(block: int) -> int:
+	match block:
+		# Needs any pickaxe (tier 0+) — no penalty, already enforced by speed
+		Chunk.Block.STONE, Chunk.Block.COBBLESTONE, Chunk.Block.MOSSY_COBBLESTONE, \
+		Chunk.Block.BRICK, Chunk.Block.SMOOTH_STONE, Chunk.Block.SMOOTH_STONE_SLAB, \
+		Chunk.Block.NETHERRACK, Chunk.Block.CRIMSON_NYLIUM, Chunk.Block.WARPED_NYLIUM, \
+		Chunk.Block.COAL_ORE, Chunk.Block.NETHER_QUARTZ_ORE, Chunk.Block.NETHER_GOLD_ORE, \
+		Chunk.Block.FURNACE:
+			return 0
+		# Needs stone+ (tier 1+)
+		Chunk.Block.IRON_ORE, Chunk.Block.IRON_BLOCK, Chunk.Block.COAL_BLOCK:
+			return 1
+		# Needs iron+ (tier 2+)
+		Chunk.Block.GOLD_ORE, Chunk.Block.DIAMOND_ORE, \
+		Chunk.Block.GOLD_BLOCK, Chunk.Block.DIAMOND_BLOCK:
+			return 2
+		# Needs diamond (tier 3)
+		Chunk.Block.OBSIDIAN:
+			return 3
+	return -1
+
+
+## Returns true if the held item satisfies the block's minimum tool-tier req.
+static func _meets_tier_requirement(block: int, held: int) -> bool:
+	var req: int = _required_tier(block)
+	if req < 0:
+		return true
+	return _pickaxe_tier(held) >= req
+
+
+## Returns true if `held` is the wrong tool type for `block`, causing 2x durability loss.
+static func _is_wrong_tool_type(block: int, held: int) -> bool:
+	if not (held >= 220 and held <= 244):
+		return false
+	var tool_type: int = (held - 220) % 5  # 0=sword, 1=pickaxe, 2=axe, 3=shovel, 4=hoe
+	var is_pickaxe_block: bool = block == Chunk.Block.STONE \
+		or block == Chunk.Block.COBBLESTONE or block == Chunk.Block.MOSSY_COBBLESTONE \
+		or block == Chunk.Block.BRICK or block == Chunk.Block.SMOOTH_STONE \
+		or block == Chunk.Block.SMOOTH_STONE_SLAB \
+		or block == Chunk.Block.COAL_ORE or block == Chunk.Block.IRON_ORE \
+		or block == Chunk.Block.GOLD_ORE or block == Chunk.Block.DIAMOND_ORE \
+		or block == Chunk.Block.IRON_BLOCK or block == Chunk.Block.GOLD_BLOCK \
+		or block == Chunk.Block.DIAMOND_BLOCK or block == Chunk.Block.COAL_BLOCK \
+		or block == Chunk.Block.NETHERRACK or block == Chunk.Block.OBSIDIAN \
+		or block == Chunk.Block.FURNACE or block == Chunk.Block.NETHER_GOLD_ORE \
+		or block == Chunk.Block.NETHER_QUARTZ_ORE
+	var is_axe_block: bool = block == Chunk.Block.LOG or block == Chunk.Block.PLANKS \
+		or block == Chunk.Block.BOOKSHELF or block == Chunk.Block.CRAFTING_TABLE \
+		or block == Chunk.Block.CRIMSON_STEM or block == Chunk.Block.WARPED_STEM
+	var is_shovel_block: bool = block == Chunk.Block.DIRT or block == Chunk.Block.SAND \
+		or block == Chunk.Block.GRASS or block == Chunk.Block.SPONGE
+	var is_hoe_block: bool = block == Chunk.Block.LEAVES \
+		or block == Chunk.Block.NETHER_WART_BLOCK or block == Chunk.Block.WARPED_WART_BLOCK
+	if is_pickaxe_block:
+		return tool_type != 1
+	if is_axe_block:
+		return tool_type != 2
+	if is_shovel_block:
+		return tool_type != 3
+	if is_hoe_block:
+		return tool_type != 4
+	return tool_type == 0  # swords are always wrong for mining neutral blocks
+
+
 ## Returns how many seconds the player must hold LMB to break `block`.
 ## 0.0 = instant. Accounts for the held tool if `hud` is available.
 func _get_block_hardness(block: int, hud_node: Node) -> float:
-	# Map block type to base hardness (seconds, bare-handed, in Minecraft terms).
+	var b: int = block
 	var base: float
-	match block:
-		Chunk.Block.AIR, Chunk.Block.FIRE, Chunk.Block.POPPY, Chunk.Block.DANDELION,
-		Chunk.Block.TORCH, Chunk.Block.RED_MUSHROOM, Chunk.Block.BROWN_MUSHROOM,
-		Chunk.Block.CRIMSON_FUNGUS, Chunk.Block.WARPED_FUNGUS, Chunk.Block.NETHER_PORTAL:
-			return 0.0
-		Chunk.Block.DIRT, Chunk.Block.SAND:
-			base = 0.75
-		Chunk.Block.GRASS:
-			base = 0.9
-		Chunk.Block.LEAVES, Chunk.Block.GLASS, Chunk.Block.WATER, Chunk.Block.LAVA:
-			base = 0.3
-		Chunk.Block.PLANKS, Chunk.Block.LOG, Chunk.Block.BOOKSHELF,
-		Chunk.Block.CRIMSON_STEM, Chunk.Block.WARPED_STEM,
-		Chunk.Block.NETHER_WART_BLOCK, Chunk.Block.WARPED_WART_BLOCK,
-		Chunk.Block.CRIMSON_NYLIUM, Chunk.Block.WARPED_NYLIUM:
-			base = 1.5
-		Chunk.Block.STONE, Chunk.Block.COBBLESTONE, Chunk.Block.MOSSY_COBBLESTONE,
-		Chunk.Block.BRICK, Chunk.Block.SMOOTH_STONE, Chunk.Block.SMOOTH_STONE_SLAB,
-		Chunk.Block.NETHERRACK, Chunk.Block.NETHER_GOLD_ORE, Chunk.Block.NETHER_QUARTZ_ORE:
-			base = 7.5
-		Chunk.Block.COAL_ORE, Chunk.Block.IRON_ORE, Chunk.Block.GOLD_ORE:
-			base = 15.0
-		Chunk.Block.DIAMOND_ORE:
-			base = 15.0
-		Chunk.Block.IRON_BLOCK, Chunk.Block.GOLD_BLOCK:
-			base = 25.0
-		Chunk.Block.DIAMOND_BLOCK:
-			base = 25.0
-		Chunk.Block.SPONGE:
-			base = 0.9
-		Chunk.Block.WOOL_WHITE, Chunk.Block.WOOL_RED, Chunk.Block.WOOL_YELLOW,
-		Chunk.Block.WOOL_GREEN, Chunk.Block.WOOL_BLUE, Chunk.Block.WOOL_ORANGE,
-		Chunk.Block.WOOL_MAGENTA, Chunk.Block.WOOL_LIGHT_BLUE, Chunk.Block.WOOL_LIME,
-		Chunk.Block.WOOL_PINK, Chunk.Block.WOOL_GRAY, Chunk.Block.WOOL_LIGHT_GRAY,
-		Chunk.Block.WOOL_CYAN, Chunk.Block.WOOL_PURPLE, Chunk.Block.WOOL_BROWN,
-		Chunk.Block.WOOL_BLACK:
-			base = 1.2
-		Chunk.Block.OBSIDIAN:
-			base = 50.0
-		Chunk.Block.TNT:
-			base = 0.0
-		Chunk.Block.FURNACE, Chunk.Block.CRAFTING_TABLE:
-			base = 3.5
-		_:
-			base = 5.0
+	if b == Chunk.Block.AIR or b == Chunk.Block.FIRE or b == Chunk.Block.POPPY \
+			or b == Chunk.Block.DANDELION or b == Chunk.Block.TORCH \
+			or b == Chunk.Block.RED_MUSHROOM or b == Chunk.Block.BROWN_MUSHROOM \
+			or b == Chunk.Block.CRIMSON_FUNGUS or b == Chunk.Block.WARPED_FUNGUS \
+			or b == Chunk.Block.NETHER_PORTAL or b == Chunk.Block.SAPLING:
+		return 0.0
+	elif b == Chunk.Block.TNT:
+		return 0.0
+	elif b == Chunk.Block.DIRT or b == Chunk.Block.SAND:
+		base = 0.75
+	elif b == Chunk.Block.GRASS or b == Chunk.Block.SPONGE:
+		base = 0.9
+	elif b == Chunk.Block.LEAVES or b == Chunk.Block.GLASS \
+			or b == Chunk.Block.WATER or b == Chunk.Block.LAVA:
+		base = 0.3
+	elif b == Chunk.Block.PLANKS or b == Chunk.Block.LOG or b == Chunk.Block.BOOKSHELF \
+			or b == Chunk.Block.CRIMSON_STEM or b == Chunk.Block.WARPED_STEM:
+		base = 3.0    # hardness 2.0, no required tool: 2.0 × 1.5 / 1
+	elif b == Chunk.Block.CRAFTING_TABLE:
+		base = 1.5    # hardness 1.0, no required tool: 1.0 × 1.5 / 1
+	elif b == Chunk.Block.NETHER_WART_BLOCK or b == Chunk.Block.WARPED_WART_BLOCK:
+		base = 1.5    # hardness 1.0, no required tool
+	elif b == Chunk.Block.STONE:
+		base = 7.5    # hardness 1.5, requires pickaxe: 1.5 × 5.0
+	elif b == Chunk.Block.COBBLESTONE or b == Chunk.Block.MOSSY_COBBLESTONE \
+			or b == Chunk.Block.BRICK or b == Chunk.Block.SMOOTH_STONE \
+			or b == Chunk.Block.SMOOTH_STONE_SLAB:
+		base = 10.0   # hardness 2.0, requires pickaxe: 2.0 × 5.0
+	elif b == Chunk.Block.NETHERRACK or b == Chunk.Block.CRIMSON_NYLIUM \
+			or b == Chunk.Block.WARPED_NYLIUM:
+		base = 2.0    # hardness 0.4, requires pickaxe: 0.4 × 5.0
+	elif b == Chunk.Block.COAL_ORE or b == Chunk.Block.IRON_ORE \
+			or b == Chunk.Block.GOLD_ORE or b == Chunk.Block.DIAMOND_ORE \
+			or b == Chunk.Block.NETHER_GOLD_ORE or b == Chunk.Block.NETHER_QUARTZ_ORE:
+		base = 15.0   # hardness 3.0, requires pickaxe: 3.0 × 5.0
+	elif b == Chunk.Block.IRON_BLOCK or b == Chunk.Block.DIAMOND_BLOCK \
+			or b == Chunk.Block.COAL_BLOCK:
+		base = 25.0   # hardness 5.0, requires pickaxe: 5.0 × 5.0
+	elif b == Chunk.Block.GOLD_BLOCK:
+		base = 15.0   # hardness 3.0, requires pickaxe: 3.0 × 5.0
+	elif b == Chunk.Block.WOOL_WHITE or b == Chunk.Block.WOOL_RED \
+			or b == Chunk.Block.WOOL_YELLOW or b == Chunk.Block.WOOL_GREEN \
+			or b == Chunk.Block.WOOL_BLUE or b == Chunk.Block.WOOL_ORANGE \
+			or b == Chunk.Block.WOOL_MAGENTA or b == Chunk.Block.WOOL_LIGHT_BLUE \
+			or b == Chunk.Block.WOOL_LIME or b == Chunk.Block.WOOL_PINK \
+			or b == Chunk.Block.WOOL_GRAY or b == Chunk.Block.WOOL_LIGHT_GRAY \
+			or b == Chunk.Block.WOOL_CYAN or b == Chunk.Block.WOOL_PURPLE \
+			or b == Chunk.Block.WOOL_BROWN or b == Chunk.Block.WOOL_BLACK:
+		base = 1.2    # hardness 0.8, no required tool: 0.8 × 1.5 / 1
+	elif b == Chunk.Block.OBSIDIAN:
+		base = 250.0  # hardness 50.0, requires pickaxe: 50.0 × 5.0
+	elif b == Chunk.Block.FURNACE:
+		base = 17.5   # hardness 3.5, requires pickaxe: 3.5 × 5.0
+	else:
+		base = 5.0
 
 	# Determine tool speed multiplier based on held item and block category.
 	var mult: float = 1.0
 	if hud_node != null and hud_node.has_method("get_selected_block"):
 		var held: int = hud_node.get_selected_block()
+		# Pickaxe-required blocks use Minecraft's corrected multipliers:
+		# mult = (10/3) × speed → 7/13/20/40/27 for wood/stone/iron/gold/diamond.
 		var is_pickaxe_block: bool = block == Chunk.Block.STONE \
 			or block == Chunk.Block.COBBLESTONE or block == Chunk.Block.MOSSY_COBBLESTONE \
 			or block == Chunk.Block.BRICK or block == Chunk.Block.SMOOTH_STONE \
@@ -702,7 +940,9 @@ func _get_block_hardness(block: int, hud_node: Node) -> float:
 			or block == Chunk.Block.COAL_ORE or block == Chunk.Block.IRON_ORE \
 			or block == Chunk.Block.GOLD_ORE or block == Chunk.Block.DIAMOND_ORE \
 			or block == Chunk.Block.IRON_BLOCK or block == Chunk.Block.GOLD_BLOCK \
-			or block == Chunk.Block.DIAMOND_BLOCK or block == Chunk.Block.NETHERRACK \
+			or block == Chunk.Block.DIAMOND_BLOCK or block == Chunk.Block.COAL_BLOCK \
+			or block == Chunk.Block.NETHERRACK \
+			or block == Chunk.Block.CRIMSON_NYLIUM or block == Chunk.Block.WARPED_NYLIUM \
 			or block == Chunk.Block.NETHER_GOLD_ORE or block == Chunk.Block.NETHER_QUARTZ_ORE \
 			or block == Chunk.Block.OBSIDIAN or block == Chunk.Block.FURNACE
 		var is_axe_block: bool = block == Chunk.Block.LOG or block == Chunk.Block.PLANKS \
@@ -710,35 +950,31 @@ func _get_block_hardness(block: int, hud_node: Node) -> float:
 			or block == Chunk.Block.CRIMSON_STEM or block == Chunk.Block.WARPED_STEM
 		var is_shovel_block: bool = block == Chunk.Block.DIRT or block == Chunk.Block.SAND \
 			or block == Chunk.Block.GRASS or block == Chunk.Block.SPONGE
-		match held:
-			Items.WOOD_PICKAXE:
-				if is_pickaxe_block: mult = 2.0
-			Items.STONE_PICKAXE:
-				if is_pickaxe_block: mult = 4.0
-			Items.IRON_PICKAXE:
-				if is_pickaxe_block: mult = 6.0
-			Items.GOLD_PICKAXE:
-				if is_pickaxe_block: mult = 12.0
-			Items.DIAMOND_PICKAXE:
-				if is_pickaxe_block: mult = 8.0
-			Items.WOOD_AXE:
-				if is_axe_block: mult = 2.0
-			Items.STONE_AXE:
-				if is_axe_block: mult = 4.0
-			Items.IRON_AXE:
-				if is_axe_block: mult = 6.0
-			Items.GOLD_AXE:
-				if is_axe_block: mult = 12.0
-			Items.DIAMOND_AXE:
-				if is_axe_block: mult = 8.0
-			Items.WOOD_SHOVEL:
-				if is_shovel_block: mult = 2.0
-			Items.STONE_SHOVEL:
-				if is_shovel_block: mult = 4.0
-			Items.IRON_SHOVEL:
-				if is_shovel_block: mult = 6.0
-			Items.GOLD_SHOVEL:
-				if is_shovel_block: mult = 12.0
-			Items.DIAMOND_SHOVEL:
-				if is_shovel_block: mult = 8.0
+		if is_pickaxe_block:
+			if held == Items.WOOD_PICKAXE:      mult = 7.0
+			elif held == Items.STONE_PICKAXE:   mult = 13.0
+			elif held == Items.IRON_PICKAXE:    mult = 20.0
+			elif held == Items.GOLD_PICKAXE:    mult = 40.0
+			elif held == Items.DIAMOND_PICKAXE: mult = 27.0
+		elif is_axe_block:
+			if held == Items.WOOD_AXE:      mult = 2.0
+			elif held == Items.STONE_AXE:   mult = 4.0
+			elif held == Items.IRON_AXE:    mult = 6.0
+			elif held == Items.GOLD_AXE:    mult = 12.0
+			elif held == Items.DIAMOND_AXE: mult = 8.0
+		elif is_shovel_block:
+			if held == Items.WOOD_SHOVEL:      mult = 2.0
+			elif held == Items.STONE_SHOVEL:   mult = 4.0
+			elif held == Items.IRON_SHOVEL:    mult = 6.0
+			elif held == Items.GOLD_SHOVEL:    mult = 12.0
+			elif held == Items.DIAMOND_SHOVEL: mult = 8.0
+		var is_hoe_block: bool = block == Chunk.Block.LEAVES \
+			or block == Chunk.Block.NETHER_WART_BLOCK \
+			or block == Chunk.Block.WARPED_WART_BLOCK
+		if is_hoe_block:
+			if held == Items.WOOD_HOE:      mult = 2.0
+			elif held == Items.STONE_HOE:   mult = 4.0
+			elif held == Items.IRON_HOE:    mult = 6.0
+			elif held == Items.GOLD_HOE:    mult = 12.0
+			elif held == Items.DIAMOND_HOE: mult = 8.0
 	return base / mult

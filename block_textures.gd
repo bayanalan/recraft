@@ -1,7 +1,7 @@
 class_name BlockTextures
 
 const TILE_SIZE: int = 16
-const TILE_COUNT: int = 72
+const TILE_COUNT: int = 73
 # Atlas layout (left to right):
 # 0  stone            1  cobblestone       2  brick
 # 3  dirt             4  planks            5  log_side
@@ -144,6 +144,8 @@ static func create_atlas() -> ImageTexture:
 	# Survival functional blocks.
 	_draw_furnace_front(img, rng, 70)
 	_draw_crafting_table_top(img, rng, 71)
+	# Compressed material block.
+	_draw_coal_block(img, rng, 72)
 
 	# World saturation lift — applied before mipmaps so downsampled levels
 	# inherit the boosted palette. Adaptive, so stone-gray pixels don't
@@ -1048,6 +1050,30 @@ static func _draw_diamond_block(img: Image, rng: RandomNumberGenerator, t: int) 
 		_px(img, t, x, 1, Color(0.80, 0.98, 1.00))
 	for y: int in range(2, TILE_SIZE - 1):
 		_px(img, t, 1, y, Color(0.62, 0.94, 1.00))
+
+
+static func _draw_coal_block(img: Image, rng: RandomNumberGenerator, t: int) -> void:
+	# Compressed coal: very dark charcoal base with subtle horizontal banding,
+	# matching the iron/gold/diamond block family language.
+	for y: int in TILE_SIZE:
+		var band: float = 0.18 + sin(float(y) * 0.85) * 0.025
+		for x: int in TILE_SIZE:
+			var v: float = clampf(band + (rng.randf() - 0.5) * 0.025, 0.0, 1.0)
+			_px(img, t, x, y, Color(v, v * 0.99, v * 0.98))
+	# Sparse bright specular flecks — coal has a glossy sheen.
+	for _i: int in 4:
+		var sx: int = rng.randi_range(2, TILE_SIZE - 3)
+		var sy: int = rng.randi_range(1, TILE_SIZE - 2)
+		_px(img, t, sx, sy, Color(0.55, 0.55, 0.58))
+		_px(img, t, sx + 1, sy, Color(0.42, 0.42, 0.45))
+	# Dark bevel border — slightly lighter than the surface so edges read.
+	var edge := Color(0.10, 0.10, 0.11)
+	for i: int in TILE_SIZE:
+		_px(img, t, i, 0, edge); _px(img, t, i, TILE_SIZE - 1, edge)
+		_px(img, t, 0, i, edge); _px(img, t, TILE_SIZE - 1, i, edge)
+	# Inner-top highlight line for 3D bevel.
+	for x: int in range(1, TILE_SIZE - 1):
+		_px(img, t, x, 1, Color(0.32, 0.32, 0.34))
 
 
 static func _draw_ore(

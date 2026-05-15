@@ -385,7 +385,7 @@ func raycast_hit(result: Dictionary) -> bool:
 	return result.get("hit", false)
 
 
-func break_block(origin: Vector3, direction: Vector3) -> Dictionary:
+func break_block(origin: Vector3, direction: Vector3, held_item: int = 0) -> Dictionary:
 	var hit: Dictionary = raycast_voxel(origin, direction)
 	if not hit.get("hit", false):
 		return {"hit": false, "drops": []}
@@ -426,21 +426,54 @@ func break_block(origin: Vector3, direction: Vector3) -> Dictionary:
 				_water_pending.append(np)
 			else:
 				_lava_pending.append(np)
-	var drops: Array = _get_block_drops(block)
+	var drops: Array = _get_block_drops(block, held_item)
 	return {"hit": true, "drops": drops, "position": pos, "block": block}
 
 
-func _get_block_drops(block: int) -> Array:
+func _get_block_drops(block: int, held_item: int = 0) -> Array:
+	var any_pick: bool = held_item == Items.WOOD_PICKAXE or held_item == Items.STONE_PICKAXE \
+		or held_item == Items.IRON_PICKAXE or held_item == Items.GOLD_PICKAXE \
+		or held_item == Items.DIAMOND_PICKAXE
+	var iron_pick: bool = held_item == Items.IRON_PICKAXE or held_item == Items.GOLD_PICKAXE \
+		or held_item == Items.DIAMOND_PICKAXE
 	match block:
-		Chunk.Block.COAL_ORE:    return [[Items.COAL, 1]]
-		Chunk.Block.IRON_ORE:    return [[Items.RAW_IRON, 1]]
-		Chunk.Block.GOLD_ORE:    return [[Items.RAW_GOLD, 1]]
-		Chunk.Block.DIAMOND_ORE: return [[Items.DIAMOND, 1]]
-		Chunk.Block.STONE:       return [[Chunk.Block.COBBLESTONE, 1]]
-		Chunk.Block.GRASS:       return [[Chunk.Block.DIRT, 1]]
-		Chunk.Block.LEAVES:      return []
-		Chunk.Block.NETHER_GOLD_ORE:   return [[Items.GOLD_INGOT, randi_range(2, 5)]]
-		Chunk.Block.NETHER_QUARTZ_ORE: return [[Items.QUARTZ, 1]]
+		Chunk.Block.COAL_ORE:
+			return [[Items.COAL, 1]] if any_pick else []
+		Chunk.Block.IRON_ORE:
+			return [[Items.RAW_IRON, 1]] if any_pick else []
+		Chunk.Block.GOLD_ORE:
+			return [[Items.RAW_GOLD, 1]] if iron_pick else []
+		Chunk.Block.DIAMOND_ORE:
+			return [[Items.DIAMOND, 1]] if iron_pick else []
+		Chunk.Block.STONE:
+			return [[Chunk.Block.COBBLESTONE, 1]] if any_pick else []
+		Chunk.Block.COBBLESTONE, Chunk.Block.MOSSY_COBBLESTONE, Chunk.Block.SMOOTH_STONE, \
+		Chunk.Block.SMOOTH_STONE_SLAB, Chunk.Block.BRICK:
+			return [[block, 1]] if any_pick else []
+		Chunk.Block.IRON_BLOCK, Chunk.Block.GOLD_BLOCK, Chunk.Block.DIAMOND_BLOCK, \
+		Chunk.Block.COAL_BLOCK:
+			return [[block, 1]] if iron_pick else []
+		Chunk.Block.FURNACE:
+			return [[block, 1]] if any_pick else []
+		Chunk.Block.OBSIDIAN:
+			return [[block, 1]] if held_item == Items.DIAMOND_PICKAXE else []
+		Chunk.Block.NETHER_GOLD_ORE:
+			return [[Items.GOLD_INGOT, randi_range(2, 5)]] if any_pick else []
+		Chunk.Block.NETHER_QUARTZ_ORE:
+			return [[Items.QUARTZ, 1]] if any_pick else []
+		Chunk.Block.NETHERRACK:
+			return [[block, 1]] if any_pick else []
+		Chunk.Block.GRASS:
+			return [[Chunk.Block.DIRT, 1]]
+		Chunk.Block.LEAVES:
+			var leaf_drops: Array = []
+			if randf() < 0.05:
+				leaf_drops.append([Items.OAK_SAPLING, 1])
+			if randf() < 0.005:
+				leaf_drops.append([Items.APPLE, 1])
+			return leaf_drops
+		Chunk.Block.SAPLING:
+			return [[Items.OAK_SAPLING, 1]]
 	return [[block, 1]]
 
 
@@ -483,7 +516,7 @@ func place_block(origin: Vector3, direction: Vector3, block_type: int, player_aa
 	if existing != Chunk.Block.AIR and existing != Chunk.Block.WATER \
 		and existing != Chunk.Block.LAVA and existing != Chunk.Block.FIRE \
 		and existing != Chunk.Block.POPPY and existing != Chunk.Block.DANDELION \
-		and existing != Chunk.Block.TORCH \
+		and existing != Chunk.Block.TORCH and existing != Chunk.Block.SAPLING \
 		and existing != Chunk.Block.RED_MUSHROOM and existing != Chunk.Block.BROWN_MUSHROOM \
 		and existing != Chunk.Block.CRIMSON_FUNGUS and existing != Chunk.Block.WARPED_FUNGUS:
 		return false
@@ -950,6 +983,12 @@ var _grass_scan_converted: Array[Vector3i] = []
 var _leaf_decay_timers: Dictionary = {}  # Vector3i -> float seconds
 var _leaf_decay_rng: RandomNumberGenerator = RandomNumberGenerator.new()
 
+# --- Sapling growth ---
+# Each sapling gets a countdown timer; on expiry a 5% roll is made.
+var _sapling_timers: Dictionary = {}   # Vector3i -> float seconds
+var _sapling_rng: RandomNumberGenerator = RandomNumberGenerator.new()
+const SAPLING_TICK_INTERVAL: float = 10.0
+
 
 func _process(delta: float) -> void:
 	# Water flow
@@ -974,9 +1013,10 @@ func _process(delta: float) -> void:
 			if _lava_pending.is_empty():
 				break
 
-	# Grass spread + leaf decay housekeeping.
+	# Grass spread + leaf decay + sapling growth.
 	_tick_grass_spread(delta)
 	_tick_leaf_decay(delta)
+	_tick_sapling_growth(delta)
 
 	# Drain explosion rebuild queue — up to 4 chunks per frame so the game
 	# stays responsive even for large blasts affecting 20+ chunks.
@@ -1407,6 +1447,138 @@ func _schedule_leaf_decay_around(log_pos: Vector3i) -> void:
 			_leaf_decay_timers[np] = _leaf_decay_rng.randf_range(3.0, 10.0)
 
 
+# --- Sapling growth ---
+
+## Register a newly-placed sapling for growth ticking.
+func add_sapling(pos: Vector3i) -> void:
+	_sapling_timers[pos] = SAPLING_TICK_INTERVAL
+
+
+func _tick_sapling_growth(delta: float) -> void:
+	var to_grow: Array[Vector3i] = []
+	var to_remove: Array[Vector3i] = []
+	for pos: Vector3i in _sapling_timers:
+		_sapling_timers[pos] -= delta
+		if _sapling_timers[pos] <= 0.0:
+			if get_voxel(pos.x, pos.y, pos.z) != Chunk.Block.SAPLING:
+				to_remove.append(pos)
+			elif _sapling_rng.randf() < 0.05:
+				to_grow.append(pos)
+			else:
+				_sapling_timers[pos] = SAPLING_TICK_INTERVAL
+	for pos: Vector3i in to_remove:
+		_sapling_timers.erase(pos)
+	for pos: Vector3i in to_grow:
+		_sapling_timers.erase(pos)
+		_grow_sapling(pos)
+
+
+func _grow_sapling(pos: Vector3i) -> void:
+	var rx: int = pos.x
+	var ry: int = pos.y
+	var rz: int = pos.z
+	var trunk_h: int = 4 + (_sapling_rng.randi() % 3)
+	var top: int = ry + trunk_h - 1
+	if top + 3 >= world_size_blocks:
+		return
+	# Place trunk
+	for ty: int in range(ry, ry + trunk_h):
+		if get_voxel(rx, ty, rz) == Chunk.Block.AIR or get_voxel(rx, ty, rz) == Chunk.Block.SAPLING:
+			set_voxel(rx, ty, rz, Chunk.Block.LOG)
+	# 5x5 leaf layers at top-1 and top (corners trimmed)
+	for leaf_y: int in [top - 1, top]:
+		for dx: int in range(-2, 3):
+			for dz: int in range(-2, 3):
+				if absi(dx) == 2 and absi(dz) == 2:
+					continue
+				if dx == 0 and dz == 0:
+					continue
+				var lx: int = rx + dx; var lz: int = rz + dz
+				if get_voxel(lx, leaf_y, lz) == Chunk.Block.AIR:
+					set_voxel(lx, leaf_y, lz, Chunk.Block.LEAVES)
+	# 3x3 leaf layer at top+1 (corners trimmed)
+	for dx: int in range(-1, 2):
+		for dz: int in range(-1, 2):
+			if absi(dx) == 1 and absi(dz) == 1:
+				continue
+			if dx == 0 and dz == 0:
+				continue
+			if get_voxel(rx + dx, top + 1, rz + dz) == Chunk.Block.AIR:
+				set_voxel(rx + dx, top + 1, rz + dz, Chunk.Block.LEAVES)
+	# Single leaf cap at top+2
+	if get_voxel(rx, top + 2, rz) == Chunk.Block.AIR:
+		set_voxel(rx, top + 2, rz, Chunk.Block.LEAVES)
+
+
+# --- Ore restoration ---
+
+## Re-place overworld ores using the same deterministic seed used at generation.
+## Restores mined ore positions by allowing placement in AIR cells.
+func restore_ores() -> void:
+	var ore_rng := RandomNumberGenerator.new()
+	ore_rng.seed = world_seed ^ 0xA3F1C209
+	var size: int = world_size_blocks
+	var area: int = size * size
+	var affected_chunks: Dictionary = {}
+	for config: Array in ORE_CONFIGS:
+		var block: int = config[0]
+		var per_1k: float = config[1]
+		var max_y_frac: float = config[2]
+		var vein_min: int = config[3]
+		var vein_max: int = config[4]
+		var count: int = int(float(area) * per_1k / 1000.0)
+		for _i: int in count:
+			var x: int = ore_rng.randi_range(1, size - 2)
+			var z: int = ore_rng.randi_range(1, size - 2)
+			var surface: int = _find_surface_y(x, z)
+			if surface < 8:
+				continue
+			var max_y: int = int(float(surface) * max_y_frac)
+			if max_y <= 3:
+				continue
+			var t: float = ore_rng.randf()
+			if ore_rng.randf() < 0.7:
+				t = t * t
+			var y: int = 2 + int(t * float(max_y - 2))
+			var vein_size: int = ore_rng.randi_range(vein_min, vein_max)
+			_restore_ore_vein(x, y, z, vein_size, block, ore_rng, affected_chunks)
+	for acp: Vector3i in affected_chunks:
+		var ac: Chunk = chunks.get(acp)
+		if ac == null:
+			continue
+		ac._padded = _build_padded(ac)
+		ac._use_padded = true
+		ac.generate_mesh(material, water_material)
+		ac._use_padded = false
+		ac._padded = PackedByteArray()
+
+
+func _restore_ore_vein(cx: int, cy: int, cz: int, count: int, block: int,
+		rng: RandomNumberGenerator, affected: Dictionary) -> void:
+	var placed: int = 0
+	var attempts: int = 0
+	var x: int = cx; var y: int = cy; var z: int = cz
+	var size: int = world_size_blocks
+	var max_attempts: int = count * 3
+	while placed < count and attempts < max_attempts:
+		attempts += 1
+		x += rng.randi_range(-1, 1)
+		y += rng.randi_range(-1, 1)
+		z += rng.randi_range(-1, 1)
+		if x < 0 or x >= size or y < 1 or y >= size or z < 0 or z >= size:
+			continue
+		var cp := Vector3i(x >> 4, y >> 4, z >> 4)
+		var chunk: Chunk = chunks.get(cp)
+		if chunk == null:
+			continue
+		var idx: int = (x & 15) + ((y & 15) << 4) + ((z & 15) << 8)
+		var current: int = chunk.voxels[idx]
+		if current == Chunk.Block.STONE or current == Chunk.Block.AIR:
+			chunk.voxels[idx] = block
+			placed += 1
+			affected[cp] = true
+
+
 # --- World generation ---
 
 ## Max chunk Y layer that can contain terrain or features. Chunks above this
@@ -1613,7 +1785,11 @@ func _generate_world(terrain_type: int) -> void:
 	# appear in a cave wall — that's the classic "spot a vein while
 	# exploring" moment and costs nothing.
 	_carve_caves(feature_rng)
-	_place_ores(feature_rng)
+	# Ores use their own deterministic sub-seed so restore_ores() can replay
+	# the exact same positions without needing to re-run pools/caves first.
+	var ore_rng := RandomNumberGenerator.new()
+	ore_rng.seed = world_seed ^ 0xA3F1C209
+	_place_ores(ore_rng)
 	_place_trees(feature_rng)
 	_place_flowers(feature_rng)
 
@@ -2699,7 +2875,9 @@ func regenerate(size: int, terrain_type: int, seed: int = 0) -> void:
 	# appear in a cave wall — that's the classic "spot a vein while
 	# exploring" moment and costs nothing.
 	_carve_caves(feature_rng)
-	_place_ores(feature_rng)
+	var ore_rng2 := RandomNumberGenerator.new()
+	ore_rng2.seed = world_seed ^ 0xA3F1C209
+	_place_ores(ore_rng2)
 	_place_trees(feature_rng)
 	_place_flowers(feature_rng)
 

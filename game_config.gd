@@ -14,3 +14,4 @@ static var world_seed: int = 0     # 0 = random
 static var save_name: String = ""
 static var world_name: String = "" # user-chosen name, used as default save name
 static var game_mode: int = GameMode.SURVIVAL
+static var cheats_enabled: bool = false

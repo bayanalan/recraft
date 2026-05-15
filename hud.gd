@@ -27,6 +27,9 @@ func set_in_lava(in_lava: bool) -> void:
 
 func _ready() -> void:
 	if GameConfig.game_mode == GameConfig.GameMode.CREATIVE:
+		var hd := get_node_or_null("HealthDisplay")
+		if hd != null:
+			hd.visible = false
 		var starter: Array[int] = [
 			Chunk.Block.STONE, Chunk.Block.COBBLESTONE, Chunk.Block.DIRT,
 			Chunk.Block.GRASS, Chunk.Block.PLANKS, Chunk.Block.LOG,
@@ -66,7 +69,7 @@ func _unhandled_input(event: InputEvent) -> void:
 		get_viewport().set_input_as_handled()
 		return
 
-	if event is InputEventMouseButton and event.pressed:
+	if event is InputEventMouseButton and event.pressed and not is_block_select_open():
 		if event.button_index == MOUSE_BUTTON_WHEEL_UP:
 			selected_slot = (selected_slot - 1 + slots.size()) % slots.size()
 			hotbar.queue_redraw()

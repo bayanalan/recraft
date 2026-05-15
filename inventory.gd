@@ -4,9 +4,12 @@ const HOTBAR_SIZE:  int = 9
 const STORAGE_SIZE: int = 27
 const TOTAL_SLOTS:  int = 36
 
-var ids:      Array[int] = []
-var counts:   Array[int] = []
-var armor_ids: Array[int] = []
+var ids:              Array[int] = []
+var counts:           Array[int] = []
+var armor_ids:        Array[int] = []
+# 0 = full/untracked (no bar shown). Positive = remaining durability.
+var durabilities:     Array[int] = []
+var armor_durabilities: Array[int] = []
 
 
 func _init() -> void:
@@ -16,6 +19,10 @@ func _init() -> void:
 	counts.fill(0)
 	armor_ids.resize(4)
 	armor_ids.fill(0)
+	durabilities.resize(TOTAL_SLOTS)
+	durabilities.fill(0)
+	armor_durabilities.resize(4)
+	armor_durabilities.fill(0)
 
 
 func get_hotbar_id(slot: int) -> int:
@@ -38,9 +45,11 @@ func set_slot(slot: int, id: int, count: int) -> void:
 	if clamped == 0 or id == 0:
 		ids[slot] = 0
 		counts[slot] = 0
+		durabilities[slot] = 0
 	else:
 		ids[slot] = id
 		counts[slot] = clamped
+		durabilities[slot] = 0
 
 
 func give_item(id: int, amount: int) -> int:
@@ -79,6 +88,7 @@ func take_from_slot(slot: int, amount: int) -> void:
 	counts[slot] = maxi(0, counts[slot] - amount)
 	if counts[slot] == 0:
 		ids[slot] = 0
+		durabilities[slot] = 0
 
 
 func get_total_count(id: int) -> int:
@@ -110,17 +120,22 @@ func swap_slots(a: int, b: int) -> void:
 		return
 	var tmp_id: int = ids[a]
 	var tmp_count: int = counts[a]
+	var tmp_dur: int = durabilities[a]
 	ids[a] = ids[b]
 	counts[a] = counts[b]
+	durabilities[a] = durabilities[b]
 	ids[b] = tmp_id
 	counts[b] = tmp_count
+	durabilities[b] = tmp_dur
 
 
 func to_dict() -> Dictionary:
 	return {
-		"ids":      ids,
-		"counts":   counts,
-		"armor_ids": armor_ids,
+		"ids":               ids,
+		"counts":            counts,
+		"armor_ids":         armor_ids,
+		"durabilities":      durabilities,
+		"armor_durabilities": armor_durabilities,
 	}
 
 
@@ -137,3 +152,45 @@ func from_dict(d: Dictionary) -> void:
 		var src: Array = d["armor_ids"]
 		for i: int in mini(src.size(), 4):
 			armor_ids[i] = int(src[i])
+	if d.has("durabilities"):
+		var src: Array = d["durabilities"]
+		for i: int in mini(src.size(), TOTAL_SLOTS):
+			durabilities[i] = int(src[i])
+	if d.has("armor_durabilities"):
+		var src: Array = d["armor_durabilities"]
+		for i: int in mini(src.size(), 4):
+			armor_durabilities[i] = int(src[i])
+
+
+## Reduce durability of a tool slot by 1 (or 2 for wrong tool type).
+## Clears the slot if durability hits 0.
+func use_tool(slot: int, double_penalty: bool = false) -> void:
+	if slot < 0 or slot >= TOTAL_SLOTS or ids[slot] == 0:
+		return
+	if not (ids[slot] >= 220 and ids[slot] <= 244):
+		return
+	var max_dur: int = Items.get_max_durability(ids[slot])
+	if max_dur <= 0:
+		return
+	if durabilities[slot] <= 0:
+		durabilities[slot] = max_dur
+	durabilities[slot] -= 2 if double_penalty else 1
+	if durabilities[slot] <= 0:
+		ids[slot] = 0
+		counts[slot] = 0
+		durabilities[slot] = 0
+
+
+## Reduce durability of an equipped armor piece. Clears the slot at 0.
+func use_armor(slot: int) -> void:
+	if slot < 0 or slot >= 4 or armor_ids[slot] == 0:
+		return
+	var max_dur: int = Items.get_max_durability(armor_ids[slot])
+	if max_dur <= 0:
+		return
+	if armor_durabilities[slot] <= 0:
+		armor_durabilities[slot] = max_dur
+	armor_durabilities[slot] -= 1
+	if armor_durabilities[slot] <= 0:
+		armor_ids[slot] = 0
+		armor_durabilities[slot] = 0

@@ -6,7 +6,7 @@ enum Screen { MAIN, SAVE, LOAD, NEW_WORLD, SETTINGS, VIDEO, CONTROLS, LOADING }
 signal resume_requested
 signal save_requested(save_name: String)
 signal load_requested(save_name: String)
-signal new_world_requested(size: int, terrain_type: int, seed: int, world_name: String)
+signal new_world_requested(size: int, terrain_type: int, seed: int, world_name: String, game_mode: int, cheats: bool)
 signal view_distance_changed(distance: int)
 signal connected_textures_changed(enabled: bool)
 signal flying_enabled_changed(enabled: bool)
@@ -18,6 +18,7 @@ signal sprint_toggle_changed(is_toggle: bool)
 signal crouch_toggle_changed(is_toggle: bool)
 signal mipmaps_changed(enabled: bool)
 signal mouse_sensitivity_changed(value: int)
+signal fullbright_changed(enabled: bool)
 signal quit_requested
 signal main_menu_requested
 
@@ -38,6 +39,8 @@ var default_save_name: String = "My World"
 var _nw_size: int = 64
 var _nw_terrain: int = World.TerrainType.VANILLA_DEFAULT
 var _nw_seed: int = 0  # 0 = random
+var _nw_mode: int = 0  # 0 = Survival, 1 = Creative
+var _nw_cheats: bool = false
 
 # Settings state — persisted in the pause menu across session
 # Factory defaults — referenced by `_reset_all_settings` and by the slider
@@ -59,6 +62,7 @@ var crouch_toggle: bool = false
 # resolution; enabling mipmaps smooths distant blocks at the cost of slight
 # pixel-art blur near the camera when looking down long corridors.
 var mipmaps: bool = false
+var fullbright: bool = false
 # Slider 1-200. 100 = normal sensitivity; 1 = "Sleepy" (barely moves); 200 =
 # "WEEEEEE" (frantic). Player scales MOUSE_SENS_BASE by value/100.
 var mouse_sensitivity: int = DEFAULT_MOUSE_SENSITIVITY
@@ -139,6 +143,8 @@ func _load_settings() -> void:
 		crouch_toggle = bool(data["crouch_toggle"])
 	if data.has("mipmaps"):
 		mipmaps = bool(data["mipmaps"])
+	if data.has("fullbright"):
+		fullbright = bool(data["fullbright"])
 	if data.has("mouse_sensitivity"):
 		mouse_sensitivity = clampi(int(data["mouse_sensitivity"]), 1, 200)
 
@@ -157,6 +163,7 @@ func _reset_all_settings() -> void:
 	sprint_toggle = false
 	crouch_toggle = false
 	mipmaps = false
+	fullbright = false
 	mouse_sensitivity = DEFAULT_MOUSE_SENSITIVITY
 	view_distance_changed.emit(view_distance)
 	connected_textures_changed.emit(connected_textures)
@@ -168,6 +175,7 @@ func _reset_all_settings() -> void:
 	sprint_toggle_changed.emit(sprint_toggle)
 	crouch_toggle_changed.emit(crouch_toggle)
 	mipmaps_changed.emit(mipmaps)
+	fullbright_changed.emit(fullbright)
 	mouse_sensitivity_changed.emit(mouse_sensitivity)
 	_save_settings()
 	if _current_screen == Screen.SETTINGS:
@@ -188,6 +196,7 @@ func _save_settings() -> void:
 		"sprint_toggle": sprint_toggle,
 		"crouch_toggle": crouch_toggle,
 		"mipmaps": mipmaps,
+		"fullbright": fullbright,
 		"mouse_sensitivity": mouse_sensitivity,
 	})
 
@@ -843,6 +852,58 @@ func _build_new_world() -> void:
 	)
 	_update_terrain_buttons(type_btns, type_values)
 
+	_content.add_child(_make_separator(10))
+
+	# Game Mode selector
+	_content.add_child(_make_label("Game Mode:", 26))
+
+	var mode_row := HBoxContainer.new()
+	mode_row.alignment = BoxContainer.ALIGNMENT_CENTER
+	mode_row.add_theme_constant_override("separation", 6)
+	_content.add_child(mode_row)
+
+	var survival_btn := _make_button("Survival", 110)
+	var creative_btn := _make_button("Creative", 110)
+	var mode_btns: Array[Button] = [survival_btn, creative_btn]
+	mode_row.add_child(survival_btn)
+	mode_row.add_child(creative_btn)
+
+	survival_btn.pressed.connect(func():
+		_nw_mode = 0
+		_update_mode_buttons(mode_btns)
+	)
+	creative_btn.pressed.connect(func():
+		_nw_mode = 1
+		_update_mode_buttons(mode_btns)
+	)
+	_update_mode_buttons(mode_btns)
+
+	_content.add_child(_make_separator(10))
+
+	# Cheats selector
+	_content.add_child(_make_label("Cheats:", 26))
+
+	var cheats_row := HBoxContainer.new()
+	cheats_row.alignment = BoxContainer.ALIGNMENT_CENTER
+	cheats_row.add_theme_constant_override("separation", 6)
+	_content.add_child(cheats_row)
+
+	var cheats_off_btn := _make_button("Off", 100)
+	var cheats_on_btn := _make_button("On", 100)
+	var cheats_btns: Array[Button] = [cheats_off_btn, cheats_on_btn]
+	cheats_row.add_child(cheats_off_btn)
+	cheats_row.add_child(cheats_on_btn)
+
+	cheats_off_btn.pressed.connect(func():
+		_nw_cheats = false
+		_update_cheats_buttons(cheats_btns)
+	)
+	cheats_on_btn.pressed.connect(func():
+		_nw_cheats = true
+		_update_cheats_buttons(cheats_btns)
+	)
+	_update_cheats_buttons(cheats_btns)
+
 	_content.add_child(_make_separator(14))
 
 	# Generate + Back
@@ -857,7 +918,8 @@ func _build_new_world() -> void:
 		var wn: String = nw_name_edit.text.strip_edges()
 		if wn.is_empty():
 			wn = "My World"
-		new_world_requested.emit(_nw_size, _nw_terrain, _nw_seed, wn)
+		wn = SaveSystem.unique_name(wn)
+		new_world_requested.emit(_nw_size, _nw_terrain, _nw_seed, wn, _nw_mode, _nw_cheats)
 	)
 	action_row.add_child(gen_btn)
 
@@ -884,6 +946,26 @@ func _update_size_buttons(btns: Array[Button], sizes: Array[int]) -> void:
 func _update_terrain_buttons(btns: Array[Button], values: Array[int]) -> void:
 	for i: int in btns.size():
 		if values[i] == _nw_terrain:
+			var sel := _btn_selected_style.duplicate() as StyleBoxTexture
+			sel.modulate_color = Color(1.0, 1.0, 0.7)
+			btns[i].add_theme_stylebox_override("normal", sel)
+		else:
+			btns[i].add_theme_stylebox_override("normal", _btn_normal_style)
+
+
+func _update_mode_buttons(btns: Array[Button]) -> void:
+	for i: int in btns.size():
+		if i == _nw_mode:
+			var sel := _btn_selected_style.duplicate() as StyleBoxTexture
+			sel.modulate_color = Color(1.0, 1.0, 0.7)
+			btns[i].add_theme_stylebox_override("normal", sel)
+		else:
+			btns[i].add_theme_stylebox_override("normal", _btn_normal_style)
+
+
+func _update_cheats_buttons(btns: Array[Button]) -> void:
+	for i: int in btns.size():
+		if bool(i) == _nw_cheats:
 			var sel := _btn_selected_style.duplicate() as StyleBoxTexture
 			sel.modulate_color = Color(1.0, 1.0, 0.7)
 			btns[i].add_theme_stylebox_override("normal", sel)
@@ -1252,6 +1334,25 @@ func _build_controls() -> void:
 		_save_settings()
 	)
 	fly_row.add_child(fly_cb)
+
+	list.add_child(_make_separator(8))
+
+	# Fullbright checkbox.
+	var fb_row := HBoxContainer.new()
+	fb_row.alignment = BoxContainer.ALIGNMENT_CENTER
+	list.add_child(fb_row)
+	var fb_cb := CheckBox.new()
+	fb_cb.button_pressed = fullbright
+	fb_cb.text = "Fullbright (caves always lit)"
+	_apply_font(fb_cb, 26)
+	fb_cb.add_theme_color_override("font_color", Color(0.95, 0.95, 0.95))
+	_style_checkbox(fb_cb)
+	fb_cb.toggled.connect(func(v: bool):
+		fullbright = v
+		fullbright_changed.emit(v)
+		_save_settings()
+	)
+	fb_row.add_child(fb_cb)
 
 	list.add_child(_make_separator(20))
 	list.add_child(_make_label("Key Bindings (click to rebind, Esc cancels):", 22, Color(0.7, 0.7, 0.7)))
