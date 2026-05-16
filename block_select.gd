@@ -54,6 +54,7 @@ const ALL_BLOCKS: Array[int] = [
 	Items.IRON_HELMET, Items.IRON_CHESTPLATE, Items.IRON_LEGGINGS, Items.IRON_BOOTS,
 	Items.GOLD_HELMET, Items.GOLD_CHESTPLATE, Items.GOLD_LEGGINGS, Items.GOLD_BOOTS,
 	Items.DIAMOND_HELMET, Items.DIAMOND_CHESTPLATE, Items.DIAMOND_LEGGINGS, Items.DIAMOND_BOOTS,
+	Items.RESTORE_ORB,
 ]
 
 const MINERALS: Array[int] = [
@@ -65,6 +66,7 @@ const MINERALS: Array[int] = [
 	Chunk.Block.CRAFTING_TABLE, Chunk.Block.FURNACE, Chunk.Block.COAL_BLOCK,
 	Items.COAL, Items.RAW_IRON, Items.RAW_GOLD, Items.DIAMOND,
 	Items.IRON_INGOT, Items.GOLD_INGOT, Items.QUARTZ,
+	Items.RESTORE_ORB,
 ]
 
 const ORES: Array[int] = [

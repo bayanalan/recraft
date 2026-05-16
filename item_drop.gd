@@ -40,6 +40,7 @@ var _world: Node = null
 var _player: Node = null
 var _merge_timer: float = 0.0
 var _sub_meshes: Array[MeshInstance3D] = []
+var _light_timer: float = 0.0
 
 static var _item_tex_cache: Dictionary = {}
 
@@ -169,6 +170,12 @@ func _process(delta: float) -> void:
 		else:
 			_mesh.position.y = MESH_HOVER
 
+	# ── Lighting update for block drops ──────────────────────────────────────
+	_light_timer -= delta
+	if _light_timer <= 0.0:
+		_light_timer = 0.5
+		_update_local_light()
+
 	# ── Attract zone check ────────────────────────────────────────────────────
 	if _pickup_immune <= 0.0 and not _attracting \
 			and _player != null and is_instance_valid(_player):
@@ -234,6 +241,29 @@ func _update_visual_stack() -> void:
 		sm.position = OFFSETS[i]
 		_mesh.add_child(sm)
 		_sub_meshes.append(sm)
+
+
+func _update_local_light() -> void:
+	if _mesh == null or not is_instance_valid(_mesh):
+		return
+	var mat: Material = _mesh.material_override
+	if not (mat is ShaderMaterial):
+		return
+	var sm: ShaderMaterial = mat as ShaderMaterial
+	if _world == null or not is_instance_valid(_world) or not _world.has_method("get_sky_access"):
+		return
+	var wx: int = int(global_position.x)
+	var wy: int = int(global_position.y + 0.5)
+	var wz: int = int(global_position.z)
+	var sky: float = _world.get_sky_access(wx, wy, wz)
+	var glow: float = 0.0
+	for lpos: Vector3i in _world.light_emitters:
+		var wlpos := Vector3(lpos.x + 0.5, lpos.y + 0.5, lpos.z + 0.5)
+		var lvl: int = _world.light_emitters[lpos]
+		var dist: float = global_position.distance_to(wlpos)
+		glow = maxf(glow, maxf(0.0, 1.0 - dist / float(lvl)))
+	sm.set_shader_parameter("sky_access", sky)
+	sm.set_shader_parameter("block_glow", glow)
 
 
 func _build_billboard_mesh() -> ArrayMesh:

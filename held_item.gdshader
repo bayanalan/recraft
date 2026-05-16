@@ -18,10 +18,13 @@ const float ATLAS_TILES = 73.0;
 // main.gd pushes an update.
 uniform vec3 sky_light = vec3(0.58, 0.56, 0.50);
 uniform vec3 ambient_light = vec3(0.20, 0.22, 0.28);
-// Per-channel floor so the held item stays readable at midnight — the
-// world can be pitch-black but the player should always see what they're
-// holding without placing a torch.
+// Sky occlusion for the holder's position (1.0=surface, 0.0=cave).
+uniform float sky_access = 1.0;
+// Pre-computed block-light glow at the holder's position (0.0–1.0).
+uniform float block_glow = 0.0;
+// Cave floor so the item is readable even deep underground with no torch.
 const vec3 MIN_LIGHT = vec3(0.32, 0.32, 0.32);
+const vec3 CAVE_AMBIENT = vec3(0.05, 0.05, 0.065);
 
 varying vec3 v_normal;
 
@@ -47,6 +50,8 @@ void fragment() {
 	// Same face shade as voxel.gdshader so the held cube reads identically
 	// to placed ones. Top face (an.y=1) brightest, side faces dimmer.
 	float face_shade = 0.72 + 0.28 * an.y + 0.08 * an.x;
-	vec3 light = max(ambient_light + sky_light, MIN_LIGHT);
+	vec3 light = CAVE_AMBIENT + (ambient_light + sky_light) * sky_access;
+	light += vec3(0.9, 0.65, 0.3) * block_glow * 0.55;
+	light = max(light, MIN_LIGHT);
 	ALBEDO = clamp(tex_sample.rgb * light * face_shade, vec3(0.0), vec3(1.0));
 }

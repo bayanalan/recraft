@@ -125,6 +125,8 @@ var _damage_tilt: float = 0.0
 var _damage_tilt_vel: float = 0.0
 var invincible_timer: float = 0.0
 
+var _restore_ore_queue: Array = []
+
 
 func _ready() -> void:
 	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
@@ -137,6 +139,24 @@ func _ready() -> void:
 	if GameConfig.game_mode == GameConfig.GameMode.SURVIVAL:
 		flying_enabled = false
 		is_flying = false
+
+
+func _process(_delta: float) -> void:
+	if _restore_ore_queue.is_empty():
+		return
+	# Rebuild 3 chunks per frame — fast enough to feel snappy, spread enough
+	# that no single frame spikes. Voxels are already placed; only mesh rebuild.
+	for _ri: int in 3:
+		if _restore_ore_queue.is_empty():
+			break
+		world.rebuild_ore_chunk(_restore_ore_queue.pop_back())
+	# Spray gold + diamond particles outward from the player.
+	if world != null and world.particle_system != null:
+		var origin: Vector3 = global_position + Vector3(0.0, 1.0, 0.0)
+		for _pi: int in 4:
+			var spread: Vector3 = Vector3(randf_range(-2.0, 2.0), randf_range(0.2, 2.5), randf_range(-2.0, 2.0))
+			var block: int = Chunk.Block.DIAMOND_ORE if randf() < 0.4 else Chunk.Block.GOLD_ORE
+			world.particle_system.spawn_break_burst(origin + spread, block)
 
 
 ## Apply a slider value (1-200) from the settings screen. 100 = normal
@@ -341,9 +361,9 @@ func _physics_process(delta: float) -> void:
 							hud.update_health(health)
 						_place_cooldown = ACTION_COOLDOWN
 				elif block_type == Items.RESTORE_ORB and rmb_edge:
-					# Use restore orb: restore all ores and consume orb
-					world.restore_ores()
-					if is_survival and hud != null:
+					# Place all ore voxels instantly, then rebuild chunks one per frame.
+					_restore_ore_queue = world.prepare_restore_ores()
+					if hud != null:
 						hud.inventory.take_from_slot(hud.selected_slot, 1)
 						hud._sync_slots_from_inventory()
 					_place_cooldown = ACTION_COOLDOWN

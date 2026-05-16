@@ -221,6 +221,12 @@ var world: Node = null
 # instead of cross-chunk Dict lookups. Cleared after mesh data is built.
 var _padded: PackedByteArray
 var _use_padded: bool = false
+# Per-column sky-light access: 256 entries (16×16), each = world-Y of the
+# highest sky-opaque block in that x,z column. A block at world_y >= this
+# value can see the sky; anything below is underground. Set by world.gd
+# before generate_mesh so _write_face can encode sky_access in COLOR.g.
+var sky_heights: PackedInt32Array = PackedInt32Array()
+var surface_heights: PackedInt32Array = PackedInt32Array()
 
 # Persistent ArrayMesh
 var _arr_mesh := ArrayMesh.new()
@@ -858,6 +864,23 @@ func _write_face(slot_start: int, bx: int, by: int, bz: int, face_dir: int, bloc
 	# Slab: vertices at y+1 drop to y+0.5 so the block is half-height.
 	var is_slab: bool = block_type == Block.SMOOTH_STONE_SLAB
 
+	var sky_access: float = 1.0
+	if not sky_heights.is_empty():
+		var world_y: int = (chunk_position.y << 4) + by
+		var check_lx: int = bx
+		var check_lz: int = bz
+		match face_dir:
+			DIR_XP: check_lx = bx + 1
+			DIR_XN: check_lx = bx - 1
+			DIR_ZP: check_lz = bz + 1
+			DIR_ZN: check_lz = bz - 1
+		check_lx = clampi(check_lx, 0, 15)
+		check_lz = clampi(check_lz, 0, 15)
+		var depth_sky: int = maxi(0, sky_heights[check_lz * 16 + check_lx] - world_y)
+		var depth_surf: int = maxi(0, surface_heights[check_lz * 16 + check_lx] - world_y) if not surface_heights.is_empty() else depth_sky
+		var depth: int = maxi(depth_sky, depth_surf)
+		sky_access = clampf(float(15 - depth) / 15.0, 0.0, 1.0)
+
 	for i: int in 6:
 		var vi: int = slot_start + i
 		var v: Vector3 = origin + fv[i]
@@ -871,7 +894,7 @@ func _write_face(slot_start: int, bx: int, by: int, bz: int, face_dir: int, bloc
 		_normals[vi] = normal
 		_uvs[vi] = fuv[i]
 		_uv2s[vi] = tile_uv2
-		_colors[vi] = Color(mask_r, 1.0, 1.0, ao[fao[i]])
+		_colors[vi] = Color(mask_r, sky_access, 1.0, ao[fao[i]])
 
 
 # --- Build faces for a single block ---

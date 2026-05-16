@@ -59,6 +59,134 @@ func _scan_light_emitters() -> void:
 # Key: Vector3i (world pos), Value: int (light level 1-16)
 var light_emitters: Dictionary = {}
 
+# Per-column sky heightmap: _col_top_opaque[wz*size + wx] = highest Y
+# that is sky-opaque. Blocks at or above this Y receive full sky_access=1.
+var _col_top_opaque: PackedInt32Array = PackedInt32Array()
+# Original terrain surface snapshot — frozen after world gen/load.
+# Used for side-face depth calculation so digging a hole creates correct
+# gradient (walls deeper in hole are dimmer) while cliff faces stay bright.
+var _col_surface: PackedInt32Array = PackedInt32Array()
+
+static func _is_sky_opaque(block: int) -> bool:
+	if block <= 0:
+		return false
+	if block == Chunk.Block.WATER or block == Chunk.Block.LAVA:
+		return false
+	if block == Chunk.Block.GLASS or block == Chunk.Block.BARRIER:
+		return false
+	if block == Chunk.Block.TORCH or block == Chunk.Block.FIRE or block == Chunk.Block.NETHER_PORTAL:
+		return false
+	if block == Chunk.Block.DANDELION or block == Chunk.Block.POPPY or block == Chunk.Block.SAPLING:
+		return false
+	if block == Chunk.Block.RED_MUSHROOM or block == Chunk.Block.BROWN_MUSHROOM:
+		return false
+	if block == Chunk.Block.CRIMSON_FUNGUS or block == Chunk.Block.WARPED_FUNGUS:
+		return false
+	return true
+
+func _init_heightmap() -> void:
+	var size: int = world_size_blocks
+	_col_top_opaque.resize(size * size)
+	_col_top_opaque.fill(0)
+	for wz: int in size:
+		for wx: int in size:
+			for wy: int in range(size - 1, -1, -1):
+				if _is_sky_opaque(get_voxel(wx, wy, wz)):
+					_col_top_opaque[wz * size + wx] = wy
+					break
+	# Snapshot: original surface before any player edits. Never updated on dig.
+	_col_surface = _col_top_opaque.duplicate()
+
+func get_sky_access(wx: int, wy: int, wz: int) -> float:
+	var size: int = world_size_blocks
+	if wx < 0 or wx >= size or wz < 0 or wz >= size:
+		return 1.0
+	if _col_top_opaque.is_empty():
+		return 1.0
+	var depth: int = maxi(0, _col_top_opaque[wz * size + wx] - wy)
+	return clampf(float(15 - depth) / 15.0, 0.0, 1.0)
+
+func _build_chunk_sky_heights(cp: Vector3i) -> PackedInt32Array:
+	var h := PackedInt32Array()
+	h.resize(256)
+	var size: int = world_size_blocks
+	var cx: int = cp.x << 4
+	var cz: int = cp.z << 4
+	for lz: int in 16:
+		for lx: int in 16:
+			var wx: int = cx + lx
+			var wz: int = cz + lz
+			if wx >= 0 and wx < size and wz >= 0 and wz < size:
+				h[lz * 16 + lx] = _col_top_opaque[wz * size + wx]
+			else:
+				h[lz * 16 + lx] = size
+	return h
+
+func _build_chunk_surface_heights(cp: Vector3i) -> PackedInt32Array:
+	var h := PackedInt32Array()
+	h.resize(256)
+	var size: int = world_size_blocks
+	var cx: int = cp.x << 4
+	var cz: int = cp.z << 4
+	for lz: int in 16:
+		for lx: int in 16:
+			var wx: int = cx + lx
+			var wz: int = cz + lz
+			if wx >= 0 and wx < size and wz >= 0 and wz < size:
+				h[lz * 16 + lx] = _col_surface[wz * size + wx]
+			else:
+				h[lz * 16 + lx] = size
+	return h
+
+func _update_col_heightmap(wx: int, wy: int, wz: int, old_block: int, new_block: int) -> void:
+	if _col_top_opaque.is_empty():
+		return
+	var size: int = world_size_blocks
+	var col_idx: int = wz * size + wx
+	var old_top: int = _col_top_opaque[col_idx]
+	var new_top: int = old_top
+	if _is_sky_opaque(new_block):
+		if wy > old_top:
+			new_top = wy
+	elif _is_sky_opaque(old_block):
+		if wy == old_top:
+			new_top = 0
+			for y: int in range(wy - 1, -1, -1):
+				if _is_sky_opaque(get_voxel(wx, y, wz)):
+					new_top = y
+					break
+	if new_top != old_top:
+		_col_top_opaque[col_idx] = new_top
+		_refresh_sky_column(wx, wz, old_top, new_top)
+
+func _refresh_sky_column(wx: int, wz: int, old_top: int, new_top: int) -> void:
+	var lx: int = wx & 15
+	var lz: int = wz & 15
+	var cx: int = wx >> 4
+	var cz: int = wz >> 4
+	var size: int = world_size_blocks
+	var new_val: int = _col_top_opaque[wz * size + wx]
+	for chunk_y: int in range(world_size_chunks):
+		var cp := Vector3i(cx, chunk_y, cz)
+		var chunk: Chunk = chunks.get(cp)
+		if chunk != null and not chunk.sky_heights.is_empty():
+			chunk.sky_heights[lz * 16 + lx] = new_val
+	var min_cy: int = min(old_top, new_top) >> 4
+	var max_cy: int = max(old_top, new_top) >> 4
+	for chunk_y: int in range(min_cy, max_cy + 1):
+		var cp := Vector3i(cx, chunk_y, cz)
+		var chunk: Chunk = chunks.get(cp)
+		if chunk == null:
+			continue
+		if chunk.mesh != chunk._arr_mesh:
+			_detach_shared_mesh(chunk)
+		else:
+			chunk._padded = _build_padded(chunk)
+			chunk._use_padded = true
+			chunk.generate_mesh(material, water_material)
+			chunk._use_padded = false
+			chunk._padded = PackedByteArray()
+
 ## Returns the light level a block emits, or 0 if it doesn't emit.
 static func get_block_light_level(block: int) -> int:
 	match block:
@@ -70,6 +198,7 @@ static func get_block_light_level(block: int) -> int:
 var _bounds_body: StaticBody3D = null
 
 signal generation_progress(progress: float, status: String)
+signal block_dropped(pos: Vector3, item_id: int, count: int)
 
 
 func _ready() -> void:
@@ -243,7 +372,9 @@ func set_voxel(wx: int, wy: int, wz: int, block_type: int) -> void:
 	var cp := Vector3i(wx >> 4, wy >> 4, wz >> 4)
 	# Create chunk on demand if it doesn't exist (e.g., building above terrain).
 	var chunk: Chunk = _ensure_chunk(cp)
+	var old_block: int = get_voxel(wx, wy, wz)
 	chunk.set_voxel(wx & 15, wy & 15, wz & 15, block_type)
+	_update_col_heightmap(wx, wy, wz, old_block, block_type)
 
 	# AO reads diagonal neighbors, so any face within a 3x3x3 neighborhood of
 	# the changed block may need re-lighting. Dispatch to up to 8 chunks for
@@ -287,6 +418,9 @@ func set_voxel(wx: int, wy: int, wz: int, block_type: int) -> void:
 ## back at `chunk._arr_mesh`. Used when a chunk needs to leave the flatgrass
 ## shared-mesh pool (e.g. on first edit).
 func _detach_shared_mesh(chunk: Chunk) -> void:
+	if not _col_top_opaque.is_empty():
+		chunk.sky_heights = _build_chunk_sky_heights(chunk.chunk_position)
+		chunk.surface_heights = _build_chunk_surface_heights(chunk.chunk_position)
 	chunk._padded = _build_padded(chunk)
 	chunk._use_padded = true
 	chunk.generate_mesh(material, water_material)
@@ -1029,6 +1163,9 @@ func _process(delta: float) -> void:
 		if ac.mesh != ac._arr_mesh:
 			_detach_shared_mesh(ac)
 		else:
+			if not _col_top_opaque.is_empty():
+				ac.sky_heights = _build_chunk_sky_heights(ac.chunk_position)
+				ac.surface_heights = _build_chunk_surface_heights(ac.chunk_position)
 			ac._padded = _build_padded(ac)
 			ac._use_padded = true
 			ac.generate_mesh(material, water_material)
@@ -1373,6 +1510,11 @@ func _tick_leaf_decay(delta: float) -> void:
 			particle_system.spawn_break_burst(Vector3(p) + Vector3(0.5, 0.5, 0.5), Chunk.Block.LEAVES)
 		set_voxel(p.x, p.y, p.z, Chunk.Block.AIR)
 		_leaf_decay_timers.erase(p)
+		var drop_pos: Vector3 = Vector3(p) + Vector3(0.5, 0.5, 0.5)
+		if randf() < 0.05:
+			block_dropped.emit(drop_pos, Items.OAK_SAPLING, 1)
+		if randf() < 0.005:
+			block_dropped.emit(drop_pos, Items.APPLE, 1)
 
 
 ## Orthogonal 6-neighbor offsets used by the leaf-support BFS.
@@ -1551,6 +1693,53 @@ func restore_ores() -> void:
 		ac.generate_mesh(material, water_material)
 		ac._use_padded = false
 		ac._padded = PackedByteArray()
+
+
+## Place all ore voxels immediately (no mesh rebuilds) and return the list of
+## chunk positions that need rebuilding. Used by the Restore Orb for gradual
+## visual effect — caller rebuilds one chunk per frame.
+func prepare_restore_ores() -> Array:
+	var ore_rng := RandomNumberGenerator.new()
+	ore_rng.seed = world_seed ^ 0xA3F1C209
+	var size: int = world_size_blocks
+	var area: int = size * size
+	var affected_chunks: Dictionary = {}
+	for config: Array in ORE_CONFIGS:
+		var block: int = config[0]
+		var per_1k: float = config[1]
+		var max_y_frac: float = config[2]
+		var vein_min: int = config[3]
+		var vein_max: int = config[4]
+		var count: int = int(float(area) * per_1k / 1000.0)
+		for _i: int in count:
+			var x: int = ore_rng.randi_range(1, size - 2)
+			var z: int = ore_rng.randi_range(1, size - 2)
+			var surface: int = _find_surface_y(x, z)
+			if surface < 8:
+				continue
+			var max_y: int = int(float(surface) * max_y_frac)
+			if max_y <= 3:
+				continue
+			var t: float = ore_rng.randf()
+			if ore_rng.randf() < 0.7:
+				t = t * t
+			var y: int = 2 + int(t * float(max_y - 2))
+			var vein_size: int = ore_rng.randi_range(vein_min, vein_max)
+			_restore_ore_vein(x, y, z, vein_size, block, ore_rng, affected_chunks)
+	return affected_chunks.keys()
+
+
+## Rebuild the mesh for a single chunk. Called once per frame by the Restore
+## Orb effect to avoid a spike from rebuilding all chunks simultaneously.
+func rebuild_ore_chunk(chunk_pos: Vector3i) -> void:
+	var ac: Chunk = chunks.get(chunk_pos)
+	if ac == null:
+		return
+	ac._padded = _build_padded(ac)
+	ac._use_padded = true
+	ac.generate_mesh(material, water_material)
+	ac._use_padded = false
+	ac._padded = PackedByteArray()
 
 
 func _restore_ore_vein(cx: int, cy: int, cz: int, count: int, block: int,
@@ -1799,9 +1988,12 @@ func _generate_world(terrain_type: int) -> void:
 	# The padded buffer gives fast AO (direct array reads instead of
 	# Dict lookups), and the inlined _compute_ao_padded eliminates
 	# ~108K method dispatches per chunk.
+	_init_heightmap()
 	for chunk: Chunk in chunks.values():
 		if not _chunk_has_solid(chunk):
 			continue
+		chunk.sky_heights = _build_chunk_sky_heights(chunk.chunk_position)
+		chunk.surface_heights = _build_chunk_surface_heights(chunk.chunk_position)
 		chunk._padded = _build_padded(chunk)
 		chunk._use_padded = true
 		chunk.generate_mesh(material, water_material)
@@ -1869,11 +2061,15 @@ func _generate_world_flatgrass() -> void:
 	var mid_cx: int = world_size_chunks / 2
 	var mid_cz: int = world_size_chunks / 2
 
+	_init_heightmap()
+
 	for cy: int in max_cy:
 		var template: Chunk = chunks.get(Vector3i(mid_cx, cy, mid_cz))
 		if template == null or not _chunk_has_solid(template):
 			continue
 
+		template.sky_heights = _build_chunk_sky_heights(template.chunk_position)
+		template.surface_heights = _build_chunk_surface_heights(template.chunk_position)
 		template._padded = _build_padded(template)
 		template._use_padded = true
 		template.generate_mesh(material, water_material)
@@ -2471,6 +2667,8 @@ func regenerate_nether(size: int, seed: int) -> void:
 	generation_progress.emit(0.42, "Building meshes...")
 	await get_tree().process_frame
 
+	_init_heightmap()
+
 	var all_chunks: Array = chunks.values()
 	var total: int = all_chunks.size()
 	var mesh_batch: int = maxi(1, total / 40)
@@ -2478,6 +2676,8 @@ func regenerate_nether(size: int, seed: int) -> void:
 	for j: int in total:
 		var chunk: Chunk = all_chunks[j]
 		if _chunk_has_solid(chunk):
+			chunk.sky_heights = _build_chunk_sky_heights(chunk.chunk_position)
+			chunk.surface_heights = _build_chunk_surface_heights(chunk.chunk_position)
 			chunk._padded = _build_padded(chunk)
 			chunk._use_padded = true
 			chunk.generate_mesh(material, water_material)
@@ -2884,6 +3084,8 @@ func regenerate(size: int, terrain_type: int, seed: int = 0) -> void:
 	generation_progress.emit(0.42, "Building meshes...")
 	await get_tree().process_frame
 
+	_init_heightmap()
+
 	var all_chunks: Array = chunks.values()
 	var total: int = all_chunks.size()
 	var mesh_batch: int = maxi(1, total / 40)
@@ -2891,6 +3093,8 @@ func regenerate(size: int, terrain_type: int, seed: int = 0) -> void:
 	for j: int in total:
 		var chunk: Chunk = all_chunks[j]
 		if _chunk_has_solid(chunk):
+			chunk.sky_heights = _build_chunk_sky_heights(chunk.chunk_position)
+			chunk.surface_heights = _build_chunk_surface_heights(chunk.chunk_position)
 			chunk._padded = _build_padded(chunk)
 			chunk._use_padded = true
 			chunk.generate_mesh(material, water_material)
@@ -3064,6 +3268,8 @@ func load_from_save(size: int, voxel_data: PackedByteArray, seed: int = 0, terra
 	generation_progress.emit(0.40, "Building meshes...")
 	await get_tree().process_frame
 
+	_init_heightmap()
+
 	# Phase 2: mesh by cy layer, using the shared-mesh fast path when every
 	# chunk at a layer has identical voxels (the flatgrass case + any world
 	# where buried stone layers are fully solid). Non-uniform layers fall
@@ -3103,6 +3309,8 @@ func load_from_save(size: int, voxel_data: PackedByteArray, seed: int = 0, terra
 					break
 
 		if uniform and _chunk_has_solid(ref_chunk):
+			ref_chunk.sky_heights = _build_chunk_sky_heights(ref_chunk.chunk_position)
+			ref_chunk.surface_heights = _build_chunk_surface_heights(ref_chunk.chunk_position)
 			ref_chunk._padded = _build_padded(ref_chunk)
 			ref_chunk._use_padded = true
 			ref_chunk.generate_mesh(material, water_material)
@@ -3141,6 +3349,8 @@ func load_from_save(size: int, voxel_data: PackedByteArray, seed: int = 0, terra
 			var since_yield: int = 0
 			for c: Chunk in layer:
 				if _chunk_has_solid(c):
+					c.sky_heights = _build_chunk_sky_heights(c.chunk_position)
+					c.surface_heights = _build_chunk_surface_heights(c.chunk_position)
 					c._padded = _build_padded(c)
 					c._use_padded = true
 					c.generate_mesh(material, water_material)

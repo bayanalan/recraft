@@ -25,6 +25,8 @@ uniform vec3 fog_color : source_color = vec3(0.53, 0.76, 0.98);
 // directional sun shadows, just uniform sky brightness that dims at night.
 uniform vec3 sky_light = vec3(0.32, 0.30, 0.26);
 uniform vec3 ambient_light = vec3(0.20, 0.22, 0.28);
+// 1.0 = fullbright mode (override sky_access to 1 everywhere so caves are lit).
+uniform float fullbright = 0.0;
 
 // Block point lights — xyz = world position, w = light level (0-16),
 // packed 4 floats per texel in a 1-row RGBA-float texture. Using a sampler
@@ -117,8 +119,13 @@ void fragment() {
 	}
 	vec3 tex_color = tex_sample.rgb;
 
-	// Minecraft-style uniform sky light — no directional shadows.
-	vec3 light = ambient_light + sky_light;
+	// Minecraft-style sky light with per-vertex sky occlusion.
+	// COLOR.g = sky_access: 1.0 = exposed to sky, 0.0 = underground/cave.
+	// CAVE_AMBIENT is the minimum light for enclosed spaces so caves are dark
+	// but never pitch-black — torches illuminate from here upward.
+	const vec3 CAVE_AMBIENT = vec3(0.05, 0.05, 0.065);
+	float sky_access = mix(COLOR.g, 1.0, fullbright);
+	vec3 light = CAVE_AMBIENT + (ambient_light + sky_light) * sky_access;
 
 	// Block point lights — warm orange glow, linear falloff to zero at the
 	// emitter's radius. Accumulates the brightest contribution (max, not sum)

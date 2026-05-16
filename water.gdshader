@@ -9,6 +9,7 @@ render_mode unshaded, cull_disabled, blend_mix, depth_draw_opaque;
 
 uniform vec3 sky_light = vec3(0.32, 0.30, 0.26);
 uniform vec3 ambient_light = vec3(0.20, 0.22, 0.28);
+uniform float fullbright = 0.0;
 // Block-emitter lights packed as a 1-row RGBA-float texture, same as
 // voxel.gdshader. No fixed slot cap — main.gd grows the texture as more
 // emitters come into view.
@@ -96,8 +97,10 @@ void fragment() {
 		tex_color = vec3(0.80, 0.94, 1.00);
 	}
 
-	// Same lighting / fog pipeline as voxel.gdshader so water fits in.
-	vec3 light = ambient_light + sky_light;
+	// Same sky-occlusion lighting as voxel.gdshader. COLOR.g = sky_access.
+	const vec3 CAVE_AMBIENT = vec3(0.05, 0.05, 0.065);
+	float sky_access = mix(COLOR.g, 1.0, fullbright);
+	vec3 light = CAVE_AMBIENT + (ambient_light + sky_light) * sky_access;
 	float block_glow = 0.0;
 	for (int i = 0; i < block_light_count; i++) {
 		vec4 l = texelFetch(lights_tex, ivec2(i, 0), 0);

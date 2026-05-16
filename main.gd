@@ -61,6 +61,8 @@ func _ready() -> void:
 		player.action_performed.connect(_on_player_action)
 	if player != null and player.has_signal("interacted_with_block"):
 		player.interacted_with_block.connect(_on_player_interact)
+	if world != null:
+		world.block_dropped.connect(_on_world_block_dropped)
 	_setup_day_night()
 	_start_from_config()
 
@@ -415,9 +417,11 @@ func _update_day_night(delta: float) -> void:
 	var ambient_col := Color(ambient.x, ambient.y, ambient.z)
 	var sky_light_col := Color(sky_light.x, sky_light.y, sky_light.z)
 	var fog_col := sky
+	var fullbright_f: float = 1.0 if fullbright else 0.0
 	for mat: ShaderMaterial in _get_all_shader_materials():
 		mat.set_shader_parameter("sky_light", sky_light_col)
 		mat.set_shader_parameter("ambient_light", ambient_col)
+		mat.set_shader_parameter("fullbright", fullbright_f)
 	# Fog color matches sky so the horizon blends correctly at any time of day.
 	if world.material != null:
 		world.material.set_shader_parameter("fog_color", fog_col)
@@ -497,6 +501,25 @@ func _push_block_lights() -> void:
 	for mat: ShaderMaterial in _get_all_shader_materials():
 		mat.set_shader_parameter("block_light_count", count)
 		mat.set_shader_parameter("lights_tex", _lights_texture)
+
+	# Push per-position lighting to the held-item shader (runs in a SubViewport
+	# so it can't sample the world-space lights texture directly).
+	var player_glow: float = 0.0
+	if is_instance_valid(player):
+		var ppos: Vector3 = player.global_position + Vector3(0.0, 0.9, 0.0)
+		for i: int in count:
+			var atten: float = maxf(0.0, 1.0 - ppos.distance_to(positions[i]) / float(levels[i]))
+			player_glow = maxf(player_glow, atten)
+		var px: int = int(player.global_position.x)
+		var py: int = int(player.global_position.y + 1.0)
+		var pz: int = int(player.global_position.z)
+		var player_sky: float = 1.0 if fullbright else world.get_sky_access(px, py, pz)
+		var held: Node = _get_held_item()
+		if held != null and held.has_method("get_block_material"):
+			var hm: ShaderMaterial = held.get_block_material()
+			if hm != null:
+				hm.set_shader_parameter("sky_access", player_sky)
+				hm.set_shader_parameter("block_glow", player_glow)
 
 
 func _get_all_shader_materials() -> Array[ShaderMaterial]:
@@ -737,6 +760,11 @@ func _on_player_action(_kind: String) -> void:
 	var held: Node = _get_held_item()
 	if held != null and held.has_method("swing"):
 		held.swing()
+
+
+func _on_world_block_dropped(pos: Vector3, item_id: int, count: int) -> void:
+	if player != null:
+		player._spawn_item_drop(pos, item_id, count)
 
 
 func _on_player_interact(block_type: int, position: Vector3i) -> void:
