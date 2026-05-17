@@ -456,6 +456,12 @@ func _physics_process(delta: float) -> void:
 	if is_crouching:
 		is_sprinting = false
 
+	# True when crouching and still has solid ground underfoot — stays true at
+	# the 0.1 m overhang where is_on_floor() becomes unreliable, so all crouch
+	# safeguards (gravity suppression, ledge safety, post-slide snap) remain
+	# active even when the physics engine stops reporting contact.
+	var _sneak_grounded := is_crouching and not is_flying and (on_floor or _has_ground_support(global_position.x, global_position.z))
+
 	# Vertical movement.
 	if is_flying:
 		var vy: float = 0.0
@@ -467,7 +473,10 @@ func _physics_process(delta: float) -> void:
 	else:
 		# Gravity + held-jump-on-ground (Minecraft-style autojump pattern).
 		if not on_floor:
-			velocity.y -= GRAVITY * delta
+			if _sneak_grounded:
+				velocity.y = 0.0  # suppress gravity at overhang so player can't sink or fall
+			else:
+				velocity.y -= GRAVITY * delta
 		if not chat_open and on_floor and Input.is_action_pressed(&"jump"):
 			velocity.y = JUMP_VELOCITY
 
@@ -488,17 +497,24 @@ func _physics_process(delta: float) -> void:
 	if is_flying:
 		rate = GROUND_ACCEL_RATE
 	else:
-		rate = GROUND_ACCEL_RATE if on_floor else AIR_ACCEL_RATE
+		rate = GROUND_ACCEL_RATE if (on_floor or _sneak_grounded) else AIR_ACCEL_RATE
 	var t: float = 1.0 - exp(-rate * delta)
+
+	# Crouch ledge safety: probe 0.2 m ahead on each axis independently.
+	# PROBE = 0.2 lets the player centre reach block_edge + 0.1 m, putting the
+	# camera 0.1 m past the side face so bridging raycasts can hit it.
+	if _sneak_grounded:
+		if absf(target_x) > 0.001:
+			if not _has_ground_support(global_position.x + signf(target_x) * 0.2, global_position.z):
+				target_x = 0.0
+				velocity.x = 0.0
+		if absf(target_z) > 0.001:
+			if not _has_ground_support(global_position.x, global_position.z + signf(target_z) * 0.2):
+				target_z = 0.0
+				velocity.z = 0.0
+
 	velocity.x = lerp(velocity.x, target_x, t)
 	velocity.z = lerp(velocity.z, target_z, t)
-
-	# Crouch ledge safety: project velocity a short distance ahead and, if
-	# that would strand the player over air, zero the offending component so
-	# they can't walk off a ledge. Exception: if the block directly under
-	# the player is a slab, allow walking off (only a half-block drop).
-	if is_crouching and on_floor:
-		_apply_crouch_ledge_safety()
 
 	# Step-up (only meaningful when walking on the ground). Disabled while
 	# crouching — sneak should not auto-hop up ledges.
@@ -563,14 +579,24 @@ func _physics_process(delta: float) -> void:
 	elif camera.rotation.z != 0.0:
 		camera.rotation.z = 0.0
 
+	floor_snap_length = 0.0 if is_crouching else 0.15
+	# Kill any downward velocity while crouching so the capsule can't be pulled
+	# down by gravity accumulation at the block edge (includes 0.1 m overhang).
+	if _sneak_grounded:
+		velocity.y = maxf(velocity.y, 0.0)
 	var _pre_slide_pos := global_position
 	move_and_slide()
-	# After sliding, if crouching caused a wall-corner deflection that pushed
-	# the player off the block edge, revert to the pre-slide position.
-	if is_crouching and on_floor and not _has_ground_support(global_position.x, global_position.z):
-		global_position = _pre_slide_pos
-		velocity.x = 0.0
-		velocity.z = 0.0
+	if _sneak_grounded:
+		# Snap y: block-edge corner geometry can push the capsule downward.
+		if global_position.y < _pre_slide_pos.y:
+			global_position.y = _pre_slide_pos.y
+			velocity.y = 0.0
+		# Full revert if physics drift pushed us off support entirely.
+		if not _has_ground_support(global_position.x, global_position.z):
+			global_position = _pre_slide_pos
+			velocity.x = 0.0
+			velocity.y = 0.0
+			velocity.z = 0.0
 
 	# Block outline raycast — ran at 60 Hz (physics rate) rather than render
 	# rate to avoid per-frame dict lookups at 1500+ fps.
@@ -650,39 +676,6 @@ func _try_step_up(wish_dir: Vector3) -> void:
 		head.position.y = _head_base_y - _step_head_offset - _crouch_smooth
 
 
-# --- Crouch ledge safety helpers ---
-
-## Project the player's velocity a short distance ahead and, if that would
-## strand us over air, zero the offending horizontal component. Exception:
-## if the block directly under the player is a slab, allow walking off
-## (slabs are half-blocks — the drop is safe).
-func _apply_crouch_ledge_safety() -> void:
-	if world == null:
-		return
-	# "It is a slab" exception — `it` being the block currently underfoot.
-	var under_b: int = _voxel_at(global_position.x, global_position.y - 0.05, global_position.z)
-	if under_b == Chunk.Block.SMOOTH_STONE_SLAB:
-		return
-
-	# Look-ahead large enough that at sneak speed (1.3 u/s) the probed position
-	# is 0.52 units ahead — safety fires when player center is still ~0.22 u
-	# INSIDE the block edge, before is_on_floor() can drop to false.
-	const LOOK_AHEAD: float = 0.4
-	var fx: float = global_position.x + velocity.x * LOOK_AHEAD
-	var fz: float = global_position.z + velocity.z * LOOK_AHEAD
-	if _has_ground_support(fx, fz):
-		return
-	# Axis-separable probe so the player can still slide along an edge
-	# (e.g. walking east along a north-facing cliff).
-	var x_only: bool = _has_ground_support(fx, global_position.z)
-	var z_only: bool = _has_ground_support(global_position.x, fz)
-	if x_only and not z_only:
-		velocity.z = 0.0
-	elif z_only and not x_only:
-		velocity.x = 0.0
-	else:
-		velocity.x = 0.0
-		velocity.z = 0.0
 
 
 ## Does any of the player's 4 footprint corners at (x, z) have a solid
