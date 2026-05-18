@@ -227,10 +227,9 @@ var _use_padded: bool = false
 # before generate_mesh so _write_face can encode sky_access in COLOR.g.
 var sky_heights: PackedInt32Array = PackedInt32Array()
 var surface_heights: PackedInt32Array = PackedInt32Array()
-# BFS light buffers — 18³ arrays (1-block padded margin). Set by world.gd
-# before generate_mesh, cleared after. Empty = use sentinel defaults.
+# Sky-light BFS buffer — 18³ array (1-block padded margin). Set by world.gd
+# before generate_mesh, cleared after. Empty = use sentinel default.
 var _padded_sky: PackedByteArray = PackedByteArray()
-var _padded_blight: PackedByteArray = PackedByteArray()
 
 # Persistent ArrayMesh
 var _arr_mesh := ArrayMesh.new()
@@ -251,6 +250,9 @@ var _normals := PackedVector3Array()
 var _colors := PackedColorArray()
 var _uvs := PackedVector2Array()
 var _uv2s := PackedVector2Array()
+# Collision verts — kept in sync by _apply_mesh so _apply_physics_only() can
+# call shape_set_data on a later frame without rebuilding the full mesh.
+var _col_verts := PackedVector3Array()
 var _slot_count: int = 0  # total slots allocated
 var _mesh_dirty: bool = false
 var _stored_mat: Material = null
@@ -880,15 +882,6 @@ func _write_face(slot_start: int, bx: int, by: int, bz: int, face_dir: int, bloc
 		DIR_ZP: blz += 1
 		DIR_ZN: blz -= 1
 	var pidx: int = blz * 324 + bly * 18 + blx
-	# sky_access is now read per-fragment from sky_light_tex in the shader —
-	# COLOR.g is unused for sky light. Kept as 0.0 placeholder.
-	const sky_access: float = 0.0
-	# blight_face: how much block (torch) light reaches this face.
-	# Default 1.0 sentinel preserves old behaviour (no occlusion) before BFS.
-	var blight_face: float = 1.0
-	if not _padded_blight.is_empty():
-		blight_face = float(_padded_blight[pidx]) / 15.0
-
 	for i: int in 6:
 		var vi: int = slot_start + i
 		var v: Vector3 = origin + fv[i]
@@ -902,7 +895,7 @@ func _write_face(slot_start: int, bx: int, by: int, bz: int, face_dir: int, bloc
 		_normals[vi] = normal
 		_uvs[vi] = fuv[i]
 		_uv2s[vi] = tile_uv2
-		_colors[vi] = Color(mask_r, sky_access, blight_face, ao[fao[i]])
+		_colors[vi] = Color(mask_r, 0.0, 0.0, ao[fao[i]])
 
 
 # --- Build faces for a single block ---
@@ -1196,8 +1189,9 @@ func _apply_mesh(update_physics: bool = true) -> void:
 	_arr_mesh.clear_surfaces()
 
 	if total_verts == 0:
+		_col_verts = PackedVector3Array()
 		if _physics_ready and update_physics:
-			PhysicsServer3D.shape_set_data(_shape_rid, {"faces": PackedVector3Array(), "backface_collision": true})
+			PhysicsServer3D.shape_set_data(_shape_rid, {"faces": _col_verts, "backface_collision": true})
 		# Ensure mesh points to our own ArrayMesh (may have been shared from
 		# a flatgrass template — switch back to own on edit).
 		mesh = _arr_mesh
@@ -1224,8 +1218,9 @@ func _apply_mesh(update_physics: bool = true) -> void:
 		_arr_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
 		if _stored_mat != null:
 			_arr_mesh.surface_set_material(0, _stored_mat)
+		_col_verts = _verts
 		if _physics_ready and update_physics:
-			PhysicsServer3D.shape_set_data(_shape_rid, {"faces": _verts, "backface_collision": true})
+			PhysicsServer3D.shape_set_data(_shape_rid, {"faces": _col_verts, "backface_collision": true})
 		mesh = _arr_mesh
 		return
 
@@ -1320,29 +1315,35 @@ func _apply_mesh(update_physics: bool = true) -> void:
 	# solid verts so the player walks through them. Water is already handled
 	# (it went to the water surface, not solid_verts). Break-raycasts still
 	# hit these blocks because block_outline uses voxel lookups, not physics.
+	# Always build _col_verts so _apply_physics_only() can call shape_set_data
+	# on a later frame without reconstructing the mesh.
+	if _has_noncollidable_faces:
+		_col_verts = PackedVector3Array()
+		_col_verts.resize(s_count)
+		var cc: int = 0
+		var k: int = 0
+		while k < s_count:
+			var tid: float = solid_uv2s[k].x
+			if tid != 44.0 and tid != 45.0 and tid != 48.0 and tid != 49.0 \
+					and tid != 50.0 and tid != 54.0 \
+					and tid != 65.0 and tid != 66.0 and tid != 67.0 and tid != 68.0:
+				for jj: int in 6:
+					_col_verts[cc + jj] = solid_verts[k + jj]
+				cc += 6
+			k += 6
+		_col_verts.resize(cc)
+	else:
+		_col_verts = solid_verts
 	if _physics_ready and update_physics:
-		var col_verts: PackedVector3Array
-		if _has_noncollidable_faces:
-			col_verts = PackedVector3Array()
-			col_verts.resize(s_count)
-			var cc: int = 0
-			var k: int = 0
-			while k < s_count:
-				var tid: float = solid_uv2s[k].x
-				if tid != 44.0 and tid != 45.0 and tid != 48.0 and tid != 49.0 \
-						and tid != 50.0 and tid != 54.0 \
-						and tid != 65.0 and tid != 66.0 and tid != 67.0 and tid != 68.0:
-					for jj: int in 6:
-						col_verts[cc + jj] = solid_verts[k + jj]
-					cc += 6
-				k += 6
-			col_verts.resize(cc)
-		else:
-			col_verts = solid_verts
-		PhysicsServer3D.shape_set_data(_shape_rid, {"faces": col_verts, "backface_collision": true})
+		PhysicsServer3D.shape_set_data(_shape_rid, {"faces": _col_verts, "backface_collision": true})
 	# Ensure mesh points to our own ArrayMesh (may have been shared from
 	# a flatgrass template — switch back to own on edit).
 	mesh = _arr_mesh
+
+
+func _apply_physics_only() -> void:
+	if _physics_ready:
+		PhysicsServer3D.shape_set_data(_shape_rid, {"faces": _col_verts, "backface_collision": true})
 
 
 func generate_collision() -> void:

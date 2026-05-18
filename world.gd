@@ -67,18 +67,26 @@ var _sky_light_texture: ImageTexture = null
 # Set true whenever _sky_light bytes change; cleared after _upload_sky_light_texture()
 # so the GPU texture is refreshed at most once per frame.
 var _sky_texture_dirty: bool = false
-# Deferred queue: chunks that need a full mesh rebuild after a BFS update.
-var _light_remesh_queue: Array[Vector3i] = []
-var _light_remesh_set: Dictionary = {}
 # Pending BFS positions queued by set_voxel — drained 1/frame so the
 # per-block BFS cost never hits more than one frame budget.
 var _pending_sky_updates: Array[Vector3i] = []
 var _pending_sky_update_set: Dictionary = {}
 var _pending_blight_updates: Array[Vector3i] = []
 var _pending_blight_update_set: Dictionary = {}
-# Set true in set_voxel; causes _process to skip BFS drain that same frame so
-# the BFS cost (6-10 ms) doesn't stack on top of the mesh-rebuild cost.
-var _block_changed_this_frame: bool = false
+# Counts down from 2 after any block change. _process skips the BFS drain
+# while > 0 so the 6-10 ms sky BFS never fires on the same frame as a mesh
+# rebuild — even when world._process runs before the caller's set_voxel in
+# the same frame (e.g. main.gd breaking a block in its own _process).
+var _bfs_skip_frames: int = 0
+# Deferred AO neighbor rebuilds: when a block is placed near a chunk boundary,
+# neighbor chunks only need AO correction. Doing it immediately adds up to 7
+# extra _apply_mesh calls to the same frame. Queue them here instead and drain
+# 2 per frame so the spike is invisible.
+# Each entry: { "cp": Vector3i, "locals": Array[Vector3i] }
+var _deferred_ao_queue: Array = []
+# Physics shape updates are deferred one frame from the mesh upload so the
+# BVH rebuild cost never lands on the same frame as the GPU mesh upload.
+var _deferred_physics_queue: Array[Vector3i] = []
 
 # Per-column sky heightmap: _col_top_opaque[wz*size + wx] = highest Y
 # that is sky-opaque. Blocks at or above this Y receive full sky_access=1.
@@ -333,20 +341,6 @@ func _update_block_light(wx: int, wy: int, wz: int) -> void:
 				_block_light[idx] = emit
 				buckets[emit].append(idx)
 	_run_block_bfs(_block_light, buckets, S, SS, x0, x1, y0, y1, z0, z1)
-	_queue_light_region(x0, x1, y0 >> 4, y1 >> 4, z0, z1)
-
-## Queue all chunks in a world-block XZ range (cy0..cy1 in chunk space) for
-## deferred light remesh.
-func _queue_light_region(x0: int, x1: int, cy0: int, cy1: int, z0: int, z1: int) -> void:
-	var cx0: int = x0 >> 4; var cx1: int = x1 >> 4
-	var cz0: int = z0 >> 4; var cz1: int = z1 >> 4
-	for qy: int in range(cy0, cy1 + 1):
-		for qz: int in range(cz0, cz1 + 1):
-			for qx: int in range(cx0, cx1 + 1):
-				var qcp := Vector3i(qx, qy, qz)
-				if not _light_remesh_set.has(qcp):
-					_light_remesh_set[qcp] = true
-					_light_remesh_queue.append(qcp)
 
 ## Shared BFS propagation for sky light. Handles the free-downward rule:
 ## when lvl==15 and direction is DOWN the neighbor also gets 15.
@@ -454,34 +448,10 @@ func _build_padded_sky(chunk: Chunk) -> PackedByteArray:
 				result[pz * 324 + py * 18 + px] = _sky_light[wy * SS + wz * S + wx]
 	return result
 
-## Build an 18³ block-light padded buffer for a chunk.
-## Returns empty if _block_light is not yet initialized.
-func _build_padded_blight(chunk: Chunk) -> PackedByteArray:
-	if _block_light.is_empty():
-		return PackedByteArray()
-	var S: int = world_size_blocks
-	var SS: int = S * S
-	var result := PackedByteArray()
-	result.resize(18 * 18 * 18)
-	result.fill(0)
-	var cp: Vector3i = chunk.chunk_position
-	var bx: int = cp.x * 16; var by: int = cp.y * 16; var bz: int = cp.z * 16
-	for pz: int in 18:
-		for py: int in 18:
-			for px: int in 18:
-				var wx: int = bx + px - 1; var wy: int = by + py - 1; var wz: int = bz + pz - 1
-				if wx < 0 or wy < 0 or wz < 0 or wx >= S or wy >= S or wz >= S:
-					continue
-				result[pz * 324 + py * 18 + px] = _block_light[wy * SS + wz * S + wx]
-	return result
-
-## Wrap generate_mesh with BFS light buffer setup/teardown.
+## Wrap generate_mesh with sky-heights/surface-heights setup.
 ## Every generate_mesh call site should use this instead.
 func _finalize_chunk_mesh(chunk: Chunk) -> void:
-	if not _block_light.is_empty():
-		chunk._padded_blight = _build_padded_blight(chunk)
 	chunk.generate_mesh(material, water_material)
-	chunk._padded_blight = PackedByteArray()
 
 func _build_chunk_sky_heights(cp: Vector3i) -> PackedInt32Array:
 	var h := PackedInt32Array()
@@ -746,7 +716,7 @@ func get_water_level_at(wx: int, wy: int, wz: int) -> int:
 func set_voxel(wx: int, wy: int, wz: int, block_type: int) -> void:
 	if wx < 0 or wx >= world_size_blocks or wy < 0 or wy >= world_size_blocks or wz < 0 or wz >= world_size_blocks:
 		return
-	_block_changed_this_frame = true
+	_bfs_skip_frames = 2
 	var cp := Vector3i(wx >> 4, wy >> 4, wz >> 4)
 	# Create chunk on demand if it doesn't exist (e.g., building above terrain).
 	var chunk: Chunk = _ensure_chunk(cp)
@@ -850,12 +820,18 @@ func set_voxel(wx: int, wy: int, wz: int, block_type: int) -> void:
 			_detach_shared_mesh(ac)
 			continue
 		var locals: Array = affected[acp]
-		for lp: Vector3i in locals:
-			ac._rebuild_block_faces(lp.x, lp.y, lp.z)
-		# Only rebuild collision shape for the chunk that actually gained/lost a
-		# block. Neighbor chunks are rebuilt for AO correction only — no geometry
-		# changed there, so the physics shape stays valid.
-		ac._apply_mesh(acp == main_cp)
+		if acp == main_cp:
+			# Main chunk: rebuild mesh now so the placed/broken block is visually
+			# correct this frame. Defer physics to next frame — the BVH rebuild
+			# is the expensive part (5-15 ms) and a 1-frame delay is imperceptible.
+			for lp: Vector3i in locals:
+				ac._rebuild_block_faces(lp.x, lp.y, lp.z)
+			ac._apply_mesh(false)
+			_deferred_physics_queue.append(main_cp)
+		else:
+			# Neighbor chunk: only needs AO correction at the shared boundary.
+			# Defer to _process so its _apply_mesh doesn't pile onto this frame.
+			_deferred_ao_queue.append({"cp": acp, "locals": locals})
 
 
 ## Rebuild a chunk's own mesh from its current voxels and point `chunk.mesh`
@@ -1623,10 +1599,33 @@ func _process(delta: float) -> void:
 	_tick_leaf_decay(delta)
 	_tick_sapling_growth(delta)
 
+	# Deferred physics shape update — 1 per frame. BVH rebuild is 5-15 ms;
+	# running it the frame after the mesh upload keeps every frame smooth.
+	if not _deferred_physics_queue.is_empty():
+		var pcp: Vector3i = _deferred_physics_queue.pop_front()
+		var pc: Chunk = chunks.get(pcp)
+		if pc != null:
+			pc._apply_physics_only()
+
+	# Drain deferred AO neighbor rebuilds — 2 per frame. These are chunk-edge
+	# AO corrections queued by set_voxel to avoid stacking onto the same frame
+	# as the main chunk rebuild. No physics update needed (geometry unchanged).
+	var ao_done: int = 0
+	while not _deferred_ao_queue.is_empty() and ao_done < 2:
+		var entry: Dictionary = _deferred_ao_queue.pop_front()
+		var ac: Chunk = chunks.get(entry["cp"])
+		if ac != null and ac.mesh == ac._arr_mesh:
+			for lp: Vector3i in entry["locals"]:
+				ac._rebuild_block_faces(lp.x, lp.y, lp.z)
+			ac._apply_mesh(false)
+		ao_done += 1
+
 	# Drain deferred BFS queue — one sky update and one block-light update per
-	# frame. Skipped on any frame where a block was placed or broken so the
-	# BFS cost (6-10 ms) never stacks on top of the mesh-rebuild cost.
-	if not _block_changed_this_frame:
+	# frame. Suppressed for 2 frames after any block change so the BFS cost
+	# never coincides with a mesh rebuild regardless of node execution order.
+	if _bfs_skip_frames > 0:
+		_bfs_skip_frames -= 1
+	else:
 		if not _pending_sky_updates.is_empty():
 			var _sp: Vector3i = _pending_sky_updates.pop_front()
 			_pending_sky_update_set.erase(_sp)
@@ -1635,7 +1634,6 @@ func _process(delta: float) -> void:
 			var _bp: Vector3i = _pending_blight_updates.pop_front()
 			_pending_blight_update_set.erase(_bp)
 			_update_block_light(_bp.x, _bp.y, _bp.z)
-	_block_changed_this_frame = false
 	# Upload sky texture once per frame — consolidates immediate cell seeds from
 	# set_voxel AND full BFS results from _update_sky_light into a single upload.
 	if _sky_texture_dirty:
@@ -1663,28 +1661,6 @@ func _process(delta: float) -> void:
 			ac._padded = PackedByteArray()
 		rebuilds_this_frame += 1
 
-	# Drain light remesh queue — 2 chunks per frame (queue is now small because sky
-	# BFS is skipped for underground blocks and remesh is Y-bounded).
-	var light_rebuilds: int = 0
-	while not _light_remesh_queue.is_empty() and light_rebuilds < 2:
-		var lcp: Vector3i = _light_remesh_queue.pop_front()
-		_light_remesh_set.erase(lcp)
-		var lc: Chunk = chunks.get(lcp)
-		if lc == null:
-			light_rebuilds += 1
-			continue
-		if lc.mesh != lc._arr_mesh:
-			_detach_shared_mesh(lc)
-		else:
-			if not _col_top_opaque.is_empty():
-				lc.sky_heights = _build_chunk_sky_heights(lc.chunk_position)
-				lc.surface_heights = _build_chunk_surface_heights(lc.chunk_position)
-			lc._padded = _build_padded(lc)
-			lc._use_padded = true
-			_finalize_chunk_mesh(lc)
-			lc._use_padded = false
-			lc._padded = PackedByteArray()
-		light_rebuilds += 1
 
 
 ## Advance one tick of a fluid's spread. Shared between water and lava so
