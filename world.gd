@@ -58,6 +58,24 @@ func _scan_light_emitters() -> void:
 # can push the nearest ones to the shader each frame.
 # Key: Vector3i (world pos), Value: int (light level 1-16)
 var light_emitters: Dictionary = {}
+# BFS light arrays — one byte (0-15) per world voxel, flat index wy*S²+wz*S+wx.
+# _sky_light: how much sky light reaches each cell (15 = full sun, 0 = none).
+# _block_light: how much torch/fire light reaches each cell.
+var _sky_light: PackedByteArray = PackedByteArray()
+var _block_light: PackedByteArray = PackedByteArray()
+var _sky_light_texture: ImageTexture = null
+# Set true whenever _sky_light bytes change; cleared after _upload_sky_light_texture()
+# so the GPU texture is refreshed at most once per frame.
+var _sky_texture_dirty: bool = false
+# Deferred queue: chunks that need a full mesh rebuild after a BFS update.
+var _light_remesh_queue: Array[Vector3i] = []
+var _light_remesh_set: Dictionary = {}
+# Pending BFS positions queued by set_voxel — drained 1/frame so the
+# per-block BFS cost never hits more than one frame budget.
+var _pending_sky_updates: Array[Vector3i] = []
+var _pending_sky_update_set: Dictionary = {}
+var _pending_blight_updates: Array[Vector3i] = []
+var _pending_blight_update_set: Dictionary = {}
 
 # Per-column sky heightmap: _col_top_opaque[wz*size + wx] = highest Y
 # that is sky-opaque. Blocks at or above this Y receive full sky_access=1.
@@ -66,6 +84,10 @@ var _col_top_opaque: PackedInt32Array = PackedInt32Array()
 # Used for side-face depth calculation so digging a hole creates correct
 # gradient (walls deeper in hole are dimmer) while cliff faces stay bright.
 var _col_surface: PackedInt32Array = PackedInt32Array()
+# Flat sky-opacity array — 1 if the voxel blocks sky light, 0 otherwise.
+# Mirrors chunk voxel data as a world-space flat array so BFS can do direct
+# array reads (20 ns) instead of chunk dict lookups (500+ ns).
+var _opaque: PackedByteArray = PackedByteArray()
 
 static func _is_sky_opaque(block: int) -> bool:
 	if block <= 0:
@@ -97,6 +119,27 @@ func _init_heightmap() -> void:
 	# Snapshot: original surface before any player edits. Never updated on dig.
 	_col_surface = _col_top_opaque.duplicate()
 
+## Build the flat opacity array from chunk voxels. Called once after world
+## gen / load so BFS functions can replace slow get_voxel dict lookups with
+## direct O(1) array reads.
+func _init_opaque() -> void:
+	var S: int = world_size_blocks
+	var SS: int = S * S
+	_opaque.resize(S * S * S)
+	_opaque.fill(0)
+	for cp: Vector3i in chunks:
+		var chunk: Chunk = chunks[cp]
+		var bx: int = cp.x << 4; var by: int = cp.y << 4; var bz: int = cp.z << 4
+		for lz: int in 16:
+			for ly: int in 16:
+				for lx: int in 16:
+					var wx: int = bx + lx; var wy: int = by + ly; var wz: int = bz + lz
+					if wx >= S or wy >= S or wz >= S:
+						continue
+					var vidx: int = lx + (ly << 4) + (lz << 8)
+					if _is_sky_opaque(chunk.voxels[vidx]):
+						_opaque[wy * SS + wz * S + wx] = 1
+
 func get_sky_access(wx: int, wy: int, wz: int) -> float:
 	var size: int = world_size_blocks
 	if wx < 0 or wx >= size or wz < 0 or wz >= size:
@@ -105,6 +148,287 @@ func get_sky_access(wx: int, wy: int, wz: int) -> float:
 		return 1.0
 	var depth: int = maxi(0, _col_top_opaque[wz * size + wx] - wy)
 	return clampf(float(15 - depth) / 15.0, 0.0, 1.0)
+
+## Sky-light BFS. Seeds all non-opaque blocks above the highest opaque block
+## in each column with level 15 (they can see the sky), then spreads that
+## light outward. Rule: propagating DOWN from a level-15 cell costs nothing
+## (open shafts keep full sky light); all other directions cost 1 per step.
+## Solid blocks stop propagation completely.
+func _init_sky_light() -> void:
+	var S: int = world_size_blocks
+	var SS: int = S * S
+	_sky_light.resize(S * S * S)
+	_sky_light.fill(0)
+	var buckets: Array = []
+	buckets.resize(16)
+	for i: int in 16:
+		buckets[i] = PackedInt32Array()
+	for wz: int in S:
+		for wx: int in S:
+			var h: int = _col_top_opaque[wz * S + wx]
+			for wy: int in range(h + 1, S):
+				var idx: int = wy * SS + wz * S + wx
+				_sky_light[idx] = 15
+				buckets[15].append(idx)
+	_run_sky_bfs(_sky_light, buckets, S, SS, 0, S - 1, 0, S - 1, 0, S - 1)
+	_upload_sky_light_texture()
+
+## Upload the flat _sky_light array to the GPU as a 2D R8 texture.
+## Width = S*S (the wz*S+wx axis), Height = S (the wy axis) — matching the
+## PackedByteArray layout exactly so no copy is needed. The voxel/water shaders
+## sample this texture per-fragment using world-space coordinates instead of
+## reading from vertex COLOR.g, which eliminates padded builds and remesh for
+## sky-light changes entirely.
+func _upload_sky_light_texture() -> void:
+	if _sky_light.is_empty() or material == null:
+		return
+	var S: int = world_size_blocks
+	var img := Image.create_from_data(S * S, S, false, Image.FORMAT_R8, _sky_light)
+	if _sky_light_texture == null:
+		_sky_light_texture = ImageTexture.create_from_image(img)
+		material.set_shader_parameter("sky_light_tex", _sky_light_texture)
+		material.set_shader_parameter("sky_S", float(S))
+		if water_material != null:
+			water_material.set_shader_parameter("sky_light_tex", _sky_light_texture)
+			water_material.set_shader_parameter("sky_S", float(S))
+	else:
+		_sky_light_texture.update(img)
+
+## Block-light BFS seeded from all current light emitters.
+func _init_block_light() -> void:
+	if light_emitters.is_empty():
+		_block_light = PackedByteArray()
+		return
+	var S: int = world_size_blocks
+	var SS: int = S * S
+	_block_light.resize(S * S * S)
+	_block_light.fill(0)
+	var buckets: Array = []
+	buckets.resize(16)
+	for i: int in 16:
+		buckets[i] = PackedInt32Array()
+	for epos: Vector3i in light_emitters:
+		var ex: int = epos.x; var ey: int = epos.y; var ez: int = epos.z
+		if ex < 0 or ey < 0 or ez < 0 or ex >= S or ey >= S or ez >= S:
+			continue
+		var emit: int = light_emitters[epos]
+		if emit > 0:
+			var idx: int = ey * SS + ez * S + ex
+			if _block_light[idx] < emit:
+				_block_light[idx] = emit
+				buckets[emit].append(idx)
+	_run_block_bfs(_block_light, buckets, S, SS, 0, S-1, 0, S-1, 0, S-1)
+
+## Local sky-light update after a block opacity change at (wx,wy,wz).
+## bfs_radius controls the XZ column band zeroed and re-seeded — default 2
+## is fine for single-block edits; TNT passes ceil(blast_radius)+2 so the
+## full crater gets proper sky light without a cutoff dark boundary.
+func _update_sky_light(wx: int, wy: int, wz: int, bfs_radius: int = 2) -> void:
+	if _sky_light.is_empty():
+		_init_sky_light()
+		return
+	var S: int = world_size_blocks
+	var SS: int = S * S
+	var x0: int = maxi(0, wx - bfs_radius); var x1: int = mini(S-1, wx + bfs_radius)
+	var z0: int = maxi(0, wz - bfs_radius); var z1: int = mini(S-1, wz + bfs_radius)
+	for ry: int in S:
+		for rz: int in range(z0, z1 + 1):
+			for rx: int in range(x0, x1 + 1):
+				_sky_light[ry * SS + rz * S + rx] = 0
+	var buckets: Array = []
+	buckets.resize(16)
+	for i: int in 16:
+		buckets[i] = PackedInt32Array()
+	for rz: int in range(z0, z1 + 1):
+		for rx: int in range(x0, x1 + 1):
+			var h: int = _col_top_opaque[rz * S + rx]
+			for ry: int in range(h + 1, S):
+				var idx: int = ry * SS + rz * S + rx
+				_sky_light[idx] = 15
+				buckets[15].append(idx)
+	_run_sky_bfs(_sky_light, buckets, S, SS, x0, x1, 0, S-1, z0, z1)
+	_sky_texture_dirty = true
+
+## Local block-light update after a block change at (wx,wy,wz).
+func _update_block_light(wx: int, wy: int, wz: int) -> void:
+	if _block_light.is_empty():
+		if not light_emitters.is_empty():
+			_init_block_light()
+		return
+	var S: int = world_size_blocks
+	var SS: int = S * S
+	const RADIUS: int = 4
+	var x0: int = maxi(0, wx-RADIUS); var x1: int = mini(S-1, wx+RADIUS)
+	var y0: int = maxi(0, wy-RADIUS); var y1: int = mini(S-1, wy+RADIUS)
+	var z0: int = maxi(0, wz-RADIUS); var z1: int = mini(S-1, wz+RADIUS)
+	for ry: int in range(y0, y1+1):
+		for rz: int in range(z0, z1+1):
+			for rx: int in range(x0, x1+1):
+				_block_light[ry * SS + rz * S + rx] = 0
+	var buckets: Array = []
+	buckets.resize(16)
+	for i: int in 16:
+		buckets[i] = PackedInt32Array()
+	for epos: Vector3i in light_emitters:
+		var ex: int = epos.x; var ey: int = epos.y; var ez: int = epos.z
+		if abs(ex-wx)>RADIUS or abs(ey-wy)>RADIUS or abs(ez-wz)>RADIUS: continue
+		if ex<x0 or ex>x1 or ey<y0 or ey>y1 or ez<z0 or ez>z1: continue
+		var emit: int = light_emitters[epos]
+		if emit > 0:
+			var idx: int = ey * SS + ez * S + ex
+			if _block_light[idx] < emit:
+				_block_light[idx] = emit
+				buckets[emit].append(idx)
+	_run_block_bfs(_block_light, buckets, S, SS, x0, x1, y0, y1, z0, z1)
+	_queue_light_region(x0, x1, y0 >> 4, y1 >> 4, z0, z1)
+
+## Queue all chunks in a world-block XZ range (cy0..cy1 in chunk space) for
+## deferred light remesh.
+func _queue_light_region(x0: int, x1: int, cy0: int, cy1: int, z0: int, z1: int) -> void:
+	var cx0: int = x0 >> 4; var cx1: int = x1 >> 4
+	var cz0: int = z0 >> 4; var cz1: int = z1 >> 4
+	for qy: int in range(cy0, cy1 + 1):
+		for qz: int in range(cz0, cz1 + 1):
+			for qx: int in range(cx0, cx1 + 1):
+				var qcp := Vector3i(qx, qy, qz)
+				if not _light_remesh_set.has(qcp):
+					_light_remesh_set[qcp] = true
+					_light_remesh_queue.append(qcp)
+
+## Shared BFS propagation for sky light. Handles the free-downward rule:
+## when lvl==15 and direction is DOWN the neighbor also gets 15.
+func _run_sky_bfs(arr: PackedByteArray, buckets: Array, S: int, SS: int,
+		x0: int, x1: int, y0: int, y1: int, z0: int, z1: int) -> void:
+	for lvl: int in range(15, 0, -1):
+		var bucket: PackedInt32Array = buckets[lvl]
+		for bi: int in bucket.size():
+			var flat: int = bucket[bi]
+			if arr[flat] != lvl:
+				continue
+			var iy: int = flat / SS
+			var rem: int = flat - iy * SS
+			var iz: int = rem / S
+			var ix: int = rem - iz * S
+			# +X -X +Y -Y +Z -Z  (index 3 = -Y = downward)
+			for si: int in 6:
+				var nx: int = ix; var ny: int = iy; var nz: int = iz
+				match si:
+					0: nx += 1
+					1: nx -= 1
+					2: ny += 1
+					3: ny -= 1
+					4: nz += 1
+					5: nz -= 1
+				if nx < x0 or nx > x1 or ny < y0 or ny > y1 or nz < z0 or nz > z1:
+					continue
+				var nidx: int = ny * SS + nz * S + nx
+				if _opaque.is_empty():
+					if _is_sky_opaque(get_voxel(nx, ny, nz)):
+						continue
+				elif _opaque[nidx] != 0:
+					continue
+				var next_lvl: int = 15 if (lvl == 15 and si == 3) else lvl - 1
+				if arr[nidx] < next_lvl:
+					arr[nidx] = next_lvl
+					buckets[next_lvl].append(nidx)
+
+## Shared BFS propagation for block light (uniform cost in all directions).
+func _run_block_bfs(arr: PackedByteArray, buckets: Array, S: int, SS: int,
+		x0: int, x1: int, y0: int, y1: int, z0: int, z1: int) -> void:
+	for lvl: int in range(15, 0, -1):
+		var bucket: PackedInt32Array = buckets[lvl]
+		for bi: int in bucket.size():
+			var flat: int = bucket[bi]
+			if arr[flat] != lvl:
+				continue
+			var iy: int = flat / SS
+			var rem: int = flat - iy * SS
+			var iz: int = rem / S
+			var ix: int = rem - iz * S
+			var next_lvl: int = lvl - 1
+			for si: int in 6:
+				var nx: int = ix; var ny: int = iy; var nz: int = iz
+				match si:
+					0: nx += 1
+					1: nx -= 1
+					2: ny += 1
+					3: ny -= 1
+					4: nz += 1
+					5: nz -= 1
+				if nx < x0 or nx > x1 or ny < y0 or ny > y1 or nz < z0 or nz > z1:
+					continue
+				var nidx: int = ny * SS + nz * S + nx
+				if _opaque.is_empty():
+					if _is_sky_opaque(get_voxel(nx, ny, nz)):
+						continue
+				elif _opaque[nidx] != 0:
+					continue
+				if arr[nidx] < next_lvl:
+					arr[nidx] = next_lvl
+					buckets[next_lvl].append(nidx)
+
+## Build an 18³ sky-light padded buffer for a chunk (1-block margin on all
+## sides). Returns empty if _sky_light is not yet initialized.
+func _build_padded_sky(chunk: Chunk) -> PackedByteArray:
+	if _sky_light.is_empty():
+		return PackedByteArray()
+	var S: int = world_size_blocks
+	var SS: int = S * S
+	var cp: Vector3i = chunk.chunk_position
+	var bx: int = cp.x * 16; var by: int = cp.y * 16; var bz: int = cp.z * 16
+	# Fast-path: scan column tops in the 18×18 extended footprint (324 iters).
+	# If every column top is below this chunk's bottom, sky_light is 0 everywhere
+	# in the chunk+border — return an all-zero buffer without the 5832-iter copy.
+	var max_top: int = 0
+	for lz: int in 18:
+		for lx: int in 18:
+			var wx: int = bx + lx - 1; var wz: int = bz + lz - 1
+			if wx >= 0 and wz >= 0 and wx < S and wz < S:
+				var t: int = _col_top_opaque[wz * S + wx]
+				if t > max_top:
+					max_top = t
+	if max_top < by - 1:
+		var r := PackedByteArray(); r.resize(5832); r.fill(0); return r
+	var result := PackedByteArray()
+	result.resize(5832)
+	result.fill(0)
+	for pz: int in 18:
+		for py: int in 18:
+			for px: int in 18:
+				var wx: int = bx + px - 1; var wy: int = by + py - 1; var wz: int = bz + pz - 1
+				if wx < 0 or wy < 0 or wz < 0 or wx >= S or wy >= S or wz >= S:
+					continue
+				result[pz * 324 + py * 18 + px] = _sky_light[wy * SS + wz * S + wx]
+	return result
+
+## Build an 18³ block-light padded buffer for a chunk.
+## Returns empty if _block_light is not yet initialized.
+func _build_padded_blight(chunk: Chunk) -> PackedByteArray:
+	if _block_light.is_empty():
+		return PackedByteArray()
+	var S: int = world_size_blocks
+	var SS: int = S * S
+	var result := PackedByteArray()
+	result.resize(18 * 18 * 18)
+	result.fill(0)
+	var cp: Vector3i = chunk.chunk_position
+	var bx: int = cp.x * 16; var by: int = cp.y * 16; var bz: int = cp.z * 16
+	for pz: int in 18:
+		for py: int in 18:
+			for px: int in 18:
+				var wx: int = bx + px - 1; var wy: int = by + py - 1; var wz: int = bz + pz - 1
+				if wx < 0 or wy < 0 or wz < 0 or wx >= S or wy >= S or wz >= S:
+					continue
+				result[pz * 324 + py * 18 + px] = _block_light[wy * SS + wz * S + wx]
+	return result
+
+## Wrap generate_mesh with BFS light buffer setup/teardown.
+## Every generate_mesh call site should use this instead.
+func _finalize_chunk_mesh(chunk: Chunk) -> void:
+	if not _block_light.is_empty():
+		chunk._padded_blight = _build_padded_blight(chunk)
+	chunk.generate_mesh(material, water_material)
+	chunk._padded_blight = PackedByteArray()
 
 func _build_chunk_sky_heights(cp: Vector3i) -> PackedInt32Array:
 	var h := PackedInt32Array()
@@ -183,7 +507,7 @@ func _refresh_sky_column(wx: int, wz: int, old_top: int, new_top: int) -> void:
 		else:
 			chunk._padded = _build_padded(chunk)
 			chunk._use_padded = true
-			chunk.generate_mesh(material, water_material)
+			_finalize_chunk_mesh(chunk)
 			chunk._use_padded = false
 			chunk._padded = PackedByteArray()
 
@@ -375,6 +699,73 @@ func set_voxel(wx: int, wy: int, wz: int, block_type: int) -> void:
 	var old_block: int = get_voxel(wx, wy, wz)
 	chunk.set_voxel(wx & 15, wy & 15, wz & 15, block_type)
 	_update_col_heightmap(wx, wy, wz, old_block, block_type)
+	if not _opaque.is_empty():
+		var _S: int = world_size_blocks
+		_opaque[wy * _S * _S + wz * _S + wx] = 1 if _is_sky_opaque(block_type) else 0
+
+	# Immediate single-cell sky-light update so the face appears correctly lit
+	# this frame — without waiting for the deferred BFS next frame.
+	# solid→air: seed from the cell above (free-downward rule) or best neighbor.
+	# air→solid: zero the cell so it doesn't "glow" into adjacent face samples.
+	if not _sky_light.is_empty():
+		var _iss: int = world_size_blocks; var _isss: int = _iss * _iss
+		var _iidx: int = wy * _isss + wz * _iss + wx
+		if _is_sky_opaque(block_type):
+			_sky_light[_iidx] = 0
+		else:
+			var _iabove: int = 0
+			if wy + 1 < _iss:
+				_iabove = _sky_light[(wy + 1) * _isss + wz * _iss + wx]
+			if _iabove == 15:
+				_sky_light[_iidx] = 15
+			else:
+				var _ibest: int = _iabove
+				for _idd: Vector3i in [Vector3i(1,0,0),Vector3i(-1,0,0),Vector3i(0,0,1),Vector3i(0,0,-1),Vector3i(0,-1,0)]:
+					var _inx: int = wx+_idd.x; var _iny: int = wy+_idd.y; var _inz: int = wz+_idd.z
+					if _inx>=0 and _iny>=0 and _inz>=0 and _inx<_iss and _iny<_iss and _inz<_iss:
+						_ibest = maxi(_ibest, _sky_light[_iny*_isss+_inz*_iss+_inx])
+				_sky_light[_iidx] = maxi(0, _ibest - 1) if _iabove < 15 else 15
+		_sky_texture_dirty = true
+
+	# Light management: update emitters dict, then run BFS if needed.
+	var wp := Vector3i(wx, wy, wz)
+	var old_emit: int = get_block_light_level(old_block)
+	var new_emit: int = get_block_light_level(block_type)
+	if old_emit > 0:
+		light_emitters.erase(wp)
+	if new_emit > 0:
+		light_emitters[wp] = new_emit
+	var emit_changed: bool = (old_emit != new_emit)
+	var opacity_changed: bool = (_is_sky_opaque(old_block) != _is_sky_opaque(block_type))
+	# Sky BFS: only needed when the change is at or near the top of a sky column.
+	# Deep underground blocks are always in darkness — sky light can't reach them
+	# regardless of what blocks change there.
+	if opacity_changed and not _col_top_opaque.is_empty():
+		var _col_top: int = _col_top_opaque[wz * world_size_blocks + wx]
+		if wy >= _col_top - 2:
+			var _up := Vector3i(wx, wy, wz)
+			if not _pending_sky_update_set.has(_up):
+				_pending_sky_update_set[_up] = true
+				_pending_sky_updates.append(_up)
+	# Block-light BFS: only needed when an emitter changed or a nearby cell has
+	# non-zero block light (opacity change inside a lit area).
+	if emit_changed:
+		var _up := Vector3i(wx, wy, wz)
+		if not _pending_blight_update_set.has(_up):
+			_pending_blight_update_set[_up] = true
+			_pending_blight_updates.append(_up)
+	elif opacity_changed and not _block_light.is_empty():
+		var _bS: int = world_size_blocks; var _bSS: int = _bS * _bS
+		for _d: Vector3i in [Vector3i(0,0,0), Vector3i(1,0,0), Vector3i(-1,0,0),
+				Vector3i(0,1,0), Vector3i(0,-1,0), Vector3i(0,0,1), Vector3i(0,0,-1)]:
+			var _nx: int = wx+_d.x; var _ny: int = wy+_d.y; var _nz: int = wz+_d.z
+			if _nx>=0 and _ny>=0 and _nz>=0 and _nx<_bS and _ny<_bS and _nz<_bS:
+				if _block_light[_ny*_bSS+_nz*_bS+_nx] > 0:
+					var _up := Vector3i(wx, wy, wz)
+					if not _pending_blight_update_set.has(_up):
+						_pending_blight_update_set[_up] = true
+						_pending_blight_updates.append(_up)
+					break
 
 	# AO reads diagonal neighbors, so any face within a 3x3x3 neighborhood of
 	# the changed block may need re-lighting. Dispatch to up to 8 chunks for
@@ -400,11 +791,6 @@ func set_voxel(wx: int, wy: int, wz: int, block_type: int) -> void:
 
 	for acp: Vector3i in affected:
 		var ac: Chunk = chunks[acp]
-		# If this chunk's visible mesh is a foreign (shared) ArrayMesh — set up
-		# by the flatgrass fast path — materialize its own independent mesh
-		# before editing, so edits don't leak to siblings sharing the source.
-		# The full rebuild already reflects the new voxel state, so skip the
-		# incremental face rebuild for this chunk.
 		if ac.mesh != ac._arr_mesh:
 			_detach_shared_mesh(ac)
 			continue
@@ -423,7 +809,7 @@ func _detach_shared_mesh(chunk: Chunk) -> void:
 		chunk.surface_heights = _build_chunk_surface_heights(chunk.chunk_position)
 	chunk._padded = _build_padded(chunk)
 	chunk._use_padded = true
-	chunk.generate_mesh(material, water_material)
+	_finalize_chunk_mesh(chunk)
 	chunk._use_padded = false
 	chunk._padded = PackedByteArray()
 
@@ -875,7 +1261,35 @@ func _explode(center: Vector3i, radius: float) -> void:
 		if lz == 0:  _mark_chunk(affected_chunks, cp.x, cp.y, cp.z - 1)
 		if lz == 15: _mark_chunk(affected_chunks, cp.x, cp.y, cp.z + 1)
 
-	# Phase 2b: wake up any fluid neighbors of destroyed cells. Same pass
+	# Phase 2b: update light arrays for all destroyed blocks so the explosion
+	# cavity gets proper sky light and block light when chunks remesh.
+	if not _opaque.is_empty():
+		var _ES: int = world_size_blocks; var _ESS: int = _ES * _ES
+		# Zero out opacity for every destroyed block.
+		for p: Vector3i in destroyed:
+			_opaque[p.y * _ESS + p.z * _ES + p.x] = 0
+		# Re-scan the heightmap for each affected column using the fast _opaque path.
+		var _ecols: Dictionary = {}
+		for p: Vector3i in destroyed:
+			_ecols[Vector2i(p.x, p.z)] = true
+		for _eck: Vector2i in _ecols:
+			var _ecx: int = _eck.x; var _ecz: int = _eck.y
+			if _ecx < 0 or _ecz < 0 or _ecx >= _ES or _ecz >= _ES:
+				continue
+			var _enew_top: int = 0
+			for _ecy: int in range(_ES - 1, -1, -1):
+				if _opaque[_ecy * _ESS + _ecz * _ES + _ecx] != 0:
+					_enew_top = _ecy
+					break
+			_col_top_opaque[_ecz * _ES + _ecx] = _enew_top
+		# Update sky and block light over the whole explosion area.
+		# bfs_radius = r_i + 2 so the sky BFS covers the full blast diameter
+		# plus a 2-block margin — prevents the hard dark cutoff at the
+		# edge of the crater when RADIUS=2 was smaller than the blast.
+		_update_sky_light(center.x, center.y, center.z, r_i + 2)
+		_update_block_light(center.x, center.y, center.z)
+
+	# Phase 2c: wake up any fluid neighbors of destroyed cells. Same pass
 	# break_block does — without this, a TNT crater that opens up next to
 	# an ocean leaves the adjacent water cells sitting frozen at their
 	# pre-blast level, because nothing ever added them to _water_pending /
@@ -1152,10 +1566,27 @@ func _process(delta: float) -> void:
 	_tick_leaf_decay(delta)
 	_tick_sapling_growth(delta)
 
+	# Drain deferred BFS queue — one sky update and one block-light update per
+	# frame so the BFS budget is always capped at one ~6-10 ms call regardless
+	# of how fast the player places or breaks blocks.
+	if not _pending_sky_updates.is_empty():
+		var _sp: Vector3i = _pending_sky_updates.pop_front()
+		_pending_sky_update_set.erase(_sp)
+		_update_sky_light(_sp.x, _sp.y, _sp.z)
+	if not _pending_blight_updates.is_empty():
+		var _bp: Vector3i = _pending_blight_updates.pop_front()
+		_pending_blight_update_set.erase(_bp)
+		_update_block_light(_bp.x, _bp.y, _bp.z)
+	# Upload sky texture once per frame — consolidates immediate cell seeds from
+	# set_voxel AND full BFS results from _update_sky_light into a single upload.
+	if _sky_texture_dirty:
+		_upload_sky_light_texture()
+		_sky_texture_dirty = false
+
 	# Drain explosion rebuild queue — up to 4 chunks per frame so the game
 	# stays responsive even for large blasts affecting 20+ chunks.
 	var rebuilds_this_frame: int = 0
-	while not _explosion_rebuild_queue.is_empty() and rebuilds_this_frame < 4:
+	while not _explosion_rebuild_queue.is_empty() and rebuilds_this_frame < 2:
 		var acp: Vector3i = _explosion_rebuild_queue.pop_front()
 		var ac: Chunk = chunks.get(acp)
 		if ac == null:
@@ -1168,10 +1599,33 @@ func _process(delta: float) -> void:
 				ac.surface_heights = _build_chunk_surface_heights(ac.chunk_position)
 			ac._padded = _build_padded(ac)
 			ac._use_padded = true
-			ac.generate_mesh(material, water_material)
+			_finalize_chunk_mesh(ac)
 			ac._use_padded = false
 			ac._padded = PackedByteArray()
 		rebuilds_this_frame += 1
+
+	# Drain light remesh queue — 2 chunks per frame (queue is now small because sky
+	# BFS is skipped for underground blocks and remesh is Y-bounded).
+	var light_rebuilds: int = 0
+	while not _light_remesh_queue.is_empty() and light_rebuilds < 2:
+		var lcp: Vector3i = _light_remesh_queue.pop_front()
+		_light_remesh_set.erase(lcp)
+		var lc: Chunk = chunks.get(lcp)
+		if lc == null:
+			light_rebuilds += 1
+			continue
+		if lc.mesh != lc._arr_mesh:
+			_detach_shared_mesh(lc)
+		else:
+			if not _col_top_opaque.is_empty():
+				lc.sky_heights = _build_chunk_sky_heights(lc.chunk_position)
+				lc.surface_heights = _build_chunk_surface_heights(lc.chunk_position)
+			lc._padded = _build_padded(lc)
+			lc._use_padded = true
+			_finalize_chunk_mesh(lc)
+			lc._use_padded = false
+			lc._padded = PackedByteArray()
+		light_rebuilds += 1
 
 
 ## Advance one tick of a fluid's spread. Shared between water and lava so
@@ -1690,7 +2144,7 @@ func restore_ores() -> void:
 			continue
 		ac._padded = _build_padded(ac)
 		ac._use_padded = true
-		ac.generate_mesh(material, water_material)
+		_finalize_chunk_mesh(ac)
 		ac._use_padded = false
 		ac._padded = PackedByteArray()
 
@@ -1737,7 +2191,7 @@ func rebuild_ore_chunk(chunk_pos: Vector3i) -> void:
 		return
 	ac._padded = _build_padded(ac)
 	ac._use_padded = true
-	ac.generate_mesh(material, water_material)
+	_finalize_chunk_mesh(ac)
 	ac._use_padded = false
 	ac._padded = PackedByteArray()
 
@@ -1989,6 +2443,10 @@ func _generate_world(terrain_type: int) -> void:
 	# Dict lookups), and the inlined _compute_ao_padded eliminates
 	# ~108K method dispatches per chunk.
 	_init_heightmap()
+	_init_opaque()
+	_scan_light_emitters()
+	_init_block_light()
+	_init_sky_light()
 	for chunk: Chunk in chunks.values():
 		if not _chunk_has_solid(chunk):
 			continue
@@ -1996,7 +2454,7 @@ func _generate_world(terrain_type: int) -> void:
 		chunk.surface_heights = _build_chunk_surface_heights(chunk.chunk_position)
 		chunk._padded = _build_padded(chunk)
 		chunk._use_padded = true
-		chunk.generate_mesh(material, water_material)
+		_finalize_chunk_mesh(chunk)
 		chunk._use_padded = false
 		chunk._padded = PackedByteArray()
 
@@ -2062,6 +2520,10 @@ func _generate_world_flatgrass() -> void:
 	var mid_cz: int = world_size_chunks / 2
 
 	_init_heightmap()
+	_init_opaque()
+	_scan_light_emitters()
+	_init_block_light()
+	_init_sky_light()
 
 	for cy: int in max_cy:
 		var template: Chunk = chunks.get(Vector3i(mid_cx, cy, mid_cz))
@@ -2072,7 +2534,7 @@ func _generate_world_flatgrass() -> void:
 		template.surface_heights = _build_chunk_surface_heights(template.chunk_position)
 		template._padded = _build_padded(template)
 		template._use_padded = true
-		template.generate_mesh(material, water_material)
+		_finalize_chunk_mesh(template)
 		template._use_padded = false
 		template._padded = PackedByteArray()
 
@@ -2668,6 +3130,10 @@ func regenerate_nether(size: int, seed: int) -> void:
 	await get_tree().process_frame
 
 	_init_heightmap()
+	_init_opaque()
+	_scan_light_emitters()
+	_init_block_light()
+	_init_sky_light()
 
 	var all_chunks: Array = chunks.values()
 	var total: int = all_chunks.size()
@@ -2680,7 +3146,7 @@ func regenerate_nether(size: int, seed: int) -> void:
 			chunk.surface_heights = _build_chunk_surface_heights(chunk.chunk_position)
 			chunk._padded = _build_padded(chunk)
 			chunk._use_padded = true
-			chunk.generate_mesh(material, water_material)
+			_finalize_chunk_mesh(chunk)
 			chunk._use_padded = false
 			chunk._padded = PackedByteArray()
 			meshed += 1
@@ -3085,6 +3551,10 @@ func regenerate(size: int, terrain_type: int, seed: int = 0) -> void:
 	await get_tree().process_frame
 
 	_init_heightmap()
+	_init_opaque()
+	_scan_light_emitters()
+	_init_block_light()
+	_init_sky_light()
 
 	var all_chunks: Array = chunks.values()
 	var total: int = all_chunks.size()
@@ -3097,7 +3567,7 @@ func regenerate(size: int, terrain_type: int, seed: int = 0) -> void:
 			chunk.surface_heights = _build_chunk_surface_heights(chunk.chunk_position)
 			chunk._padded = _build_padded(chunk)
 			chunk._use_padded = true
-			chunk.generate_mesh(material, water_material)
+			_finalize_chunk_mesh(chunk)
 			chunk._use_padded = false
 			chunk._padded = PackedByteArray()
 			meshed += 1
@@ -3269,6 +3739,10 @@ func load_from_save(size: int, voxel_data: PackedByteArray, seed: int = 0, terra
 	await get_tree().process_frame
 
 	_init_heightmap()
+	_init_opaque()
+	_scan_light_emitters()
+	_init_block_light()
+	_init_sky_light()
 
 	# Phase 2: mesh by cy layer, using the shared-mesh fast path when every
 	# chunk at a layer has identical voxels (the flatgrass case + any world
@@ -3313,7 +3787,7 @@ func load_from_save(size: int, voxel_data: PackedByteArray, seed: int = 0, terra
 			ref_chunk.surface_heights = _build_chunk_surface_heights(ref_chunk.chunk_position)
 			ref_chunk._padded = _build_padded(ref_chunk)
 			ref_chunk._use_padded = true
-			ref_chunk.generate_mesh(material, water_material)
+			_finalize_chunk_mesh(ref_chunk)
 			ref_chunk._use_padded = false
 			ref_chunk._padded = PackedByteArray()
 
@@ -3353,7 +3827,7 @@ func load_from_save(size: int, voxel_data: PackedByteArray, seed: int = 0, terra
 					c.surface_heights = _build_chunk_surface_heights(c.chunk_position)
 					c._padded = _build_padded(c)
 					c._use_padded = true
-					c.generate_mesh(material, water_material)
+					_finalize_chunk_mesh(c)
 					c._use_padded = false
 					c._padded = PackedByteArray()
 					meshed += 1

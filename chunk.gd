@@ -227,6 +227,10 @@ var _use_padded: bool = false
 # before generate_mesh so _write_face can encode sky_access in COLOR.g.
 var sky_heights: PackedInt32Array = PackedInt32Array()
 var surface_heights: PackedInt32Array = PackedInt32Array()
+# BFS light buffers — 18³ arrays (1-block padded margin). Set by world.gd
+# before generate_mesh, cleared after. Empty = use sentinel defaults.
+var _padded_sky: PackedByteArray = PackedByteArray()
+var _padded_blight: PackedByteArray = PackedByteArray()
 
 # Persistent ArrayMesh
 var _arr_mesh := ArrayMesh.new()
@@ -864,22 +868,26 @@ func _write_face(slot_start: int, bx: int, by: int, bz: int, face_dir: int, bloc
 	# Slab: vertices at y+1 drop to y+0.5 so the block is half-height.
 	var is_slab: bool = block_type == Block.SMOOTH_STONE_SLAB
 
-	var sky_access: float = 1.0
-	if not sky_heights.is_empty():
-		var world_y: int = (chunk_position.y << 4) + by
-		var check_lx: int = bx
-		var check_lz: int = bz
-		match face_dir:
-			DIR_XP: check_lx = bx + 1
-			DIR_XN: check_lx = bx - 1
-			DIR_ZP: check_lz = bz + 1
-			DIR_ZN: check_lz = bz - 1
-		check_lx = clampi(check_lx, 0, 15)
-		check_lz = clampi(check_lz, 0, 15)
-		var depth_sky: int = maxi(0, sky_heights[check_lz * 16 + check_lx] - world_y)
-		var depth_surf: int = maxi(0, surface_heights[check_lz * 16 + check_lx] - world_y) if not surface_heights.is_empty() else depth_sky
-		var depth: int = maxi(depth_sky, depth_surf)
-		sky_access = clampf(float(15 - depth) / 15.0, 0.0, 1.0)
+	# Sample the padded cell adjacent to (outside of) this face for both
+	# sky light and block light. The padded array is 18³ with interior at
+	# indices 1-16; bx+1 maps into 1-16, then +1 more steps outside the face.
+	var blx: int = bx + 1; var bly: int = by + 1; var blz: int = bz + 1
+	match face_dir:
+		DIR_XP: blx += 1
+		DIR_XN: blx -= 1
+		DIR_YP: bly += 1
+		DIR_YN: bly -= 1
+		DIR_ZP: blz += 1
+		DIR_ZN: blz -= 1
+	var pidx: int = blz * 324 + bly * 18 + blx
+	# sky_access is now read per-fragment from sky_light_tex in the shader —
+	# COLOR.g is unused for sky light. Kept as 0.0 placeholder.
+	const sky_access: float = 0.0
+	# blight_face: how much block (torch) light reaches this face.
+	# Default 1.0 sentinel preserves old behaviour (no occlusion) before BFS.
+	var blight_face: float = 1.0
+	if not _padded_blight.is_empty():
+		blight_face = float(_padded_blight[pidx]) / 15.0
 
 	for i: int in 6:
 		var vi: int = slot_start + i
@@ -894,7 +902,7 @@ func _write_face(slot_start: int, bx: int, by: int, bz: int, face_dir: int, bloc
 		_normals[vi] = normal
 		_uvs[vi] = fuv[i]
 		_uv2s[vi] = tile_uv2
-		_colors[vi] = Color(mask_r, sky_access, 1.0, ao[fao[i]])
+		_colors[vi] = Color(mask_r, sky_access, blight_face, ao[fao[i]])
 
 
 # --- Build faces for a single block ---

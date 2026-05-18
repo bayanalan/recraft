@@ -15,6 +15,8 @@ uniform float fullbright = 0.0;
 // emitters come into view.
 uniform int block_light_count = 0;
 uniform sampler2D lights_tex : filter_nearest, repeat_disable;
+uniform sampler2D sky_light_tex : filter_nearest, repeat_disable;
+uniform float sky_S = 64.0;
 const float PIXELS_PER_UNIT = 16.0;  // matches the 16-texel block resolution
 // Same distance-fog uniforms as voxel.gdshader so water blocks fade with the
 // terrain instead of staying vivid past the render distance.
@@ -97,9 +99,15 @@ void fragment() {
 		tex_color = vec3(0.80, 0.94, 1.00);
 	}
 
-	// Same sky-occlusion lighting as voxel.gdshader. COLOR.g = sky_access.
-	const vec3 CAVE_AMBIENT = vec3(0.05, 0.05, 0.065);
-	float sky_access = mix(COLOR.g, 1.0, fullbright);
+	// Same sky-light texture lookup as voxel.gdshader.
+	const vec3 CAVE_AMBIENT = vec3(0.025, 0.025, 0.03);
+	vec3 w_face_cell = floor(world_pos + normalize(world_normal) * 0.5);
+	w_face_cell = clamp(w_face_cell, vec3(0.0), vec3(sky_S - 1.0));
+	float w_sky_uv_x = (w_face_cell.z * sky_S + w_face_cell.x + 0.5) / (sky_S * sky_S);
+	float w_sky_uv_y = (w_face_cell.y + 0.5) / sky_S;
+	float w_sky_raw = texture(sky_light_tex, vec2(w_sky_uv_x, w_sky_uv_y)).r * (255.0 / 15.0);
+	float w_sky_curved = pow(w_sky_raw, 1.8);
+	float sky_access = mix(w_sky_curved, 1.0, fullbright);
 	vec3 light = CAVE_AMBIENT + (ambient_light + sky_light) * sky_access;
 	float block_glow = 0.0;
 	for (int i = 0; i < block_light_count; i++) {
@@ -107,10 +115,11 @@ void fragment() {
 		vec3 lpos = l.xyz;
 		float level = l.w;
 		float dist = length(world_pos - lpos);
-		float atten = max(0.0, 1.0 - dist / level);
+		float t = clamp(dist / level, 0.0, 1.0);
+		float atten = 1.0 - smoothstep(0.0, 1.0, t);
 		block_glow = max(block_glow, atten);
 	}
-	light += vec3(0.9, 0.65, 0.3) * block_glow * 0.55;
+	light += vec3(0.9, 0.65, 0.3) * block_glow * 0.6;
 	float face_shade = 0.72 + 0.28 * an.y + 0.08 * an.x;
 	float ao = COLOR.a;
 	ao = ao * ao;

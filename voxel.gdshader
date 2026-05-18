@@ -27,6 +27,13 @@ uniform vec3 sky_light = vec3(0.32, 0.30, 0.26);
 uniform vec3 ambient_light = vec3(0.20, 0.22, 0.28);
 // 1.0 = fullbright mode (override sky_access to 1 everywhere so caves are lit).
 uniform float fullbright = 0.0;
+// Sky light as a 2D R8 texture: width = sky_S², height = sky_S.
+// Pixel at column (wz*sky_S+wx), row wy holds the sky-light level (0-15 packed
+// as a 0-15 byte). Sampled per-fragment from world_pos + face normal * 0.5
+// so each face reads the cell just outside it. Replaces the COLOR.g vertex
+// channel — no padded builds or chunk remesh needed for sky changes.
+uniform sampler2D sky_light_tex : filter_nearest, repeat_disable;
+uniform float sky_S = 64.0;
 
 // Block point lights — xyz = world position, w = light level (0-16),
 // packed 4 floats per texel in a 1-row RGBA-float texture. Using a sampler
@@ -119,29 +126,39 @@ void fragment() {
 	}
 	vec3 tex_color = tex_sample.rgb;
 
-	// Minecraft-style sky light with per-vertex sky occlusion.
-	// COLOR.g = sky_access: 1.0 = exposed to sky, 0.0 = underground/cave.
-	// CAVE_AMBIENT is the minimum light for enclosed spaces so caves are dark
-	// but never pitch-black — torches illuminate from here upward.
-	const vec3 CAVE_AMBIENT = vec3(0.05, 0.05, 0.065);
-	float sky_access = mix(COLOR.g, 1.0, fullbright);
+	// Sky light from the world-space texture — sample the cell just outside
+	// this face (world_pos + normal * 0.5 steps one half-block outward into
+	// the neighbor cell). R8 stores 0-15 as byte 0-15, so multiply by 255/15
+	// to map the sampled 0.0-0.059 range back to 0.0-1.0 sky_access.
+	// CAVE_AMBIENT is the minimum brightness in fully enclosed spaces. 0.07
+	// keeps caves dark (torch-dependent) while preventing absolute pitch-black.
+	const vec3 CAVE_AMBIENT = vec3(0.025, 0.025, 0.03);
+	vec3 face_cell = floor(world_pos + normalize(world_normal) * 0.5);
+	face_cell = clamp(face_cell, vec3(0.0), vec3(sky_S - 1.0));
+	float sky_uv_x = (face_cell.z * sky_S + face_cell.x + 0.5) / (sky_S * sky_S);
+	float sky_uv_y = (face_cell.y + 0.5) / sky_S;
+	float sky_raw = texture(sky_light_tex, vec2(sky_uv_x, sky_uv_y)).r * (255.0 / 15.0);
+	// Gamma curve: compresses bright values and stretches mid-range so the
+	// gradient from sunlit surface into shadowed cave is visually smooth.
+	float sky_curved = pow(sky_raw, 1.8);
+	float sky_access = mix(sky_curved, 1.0, fullbright);
 	vec3 light = CAVE_AMBIENT + (ambient_light + sky_light) * sky_access;
 
-	// Block point lights — warm orange glow, linear falloff to zero at the
-	// emitter's radius. Accumulates the brightest contribution (max, not sum)
-	// to avoid overlapping torches producing washed-out white.
+	// Block point lights — warm orange glow, smooth falloff so torch light
+	// blends gradually into surrounding darkness rather than cutting off hard.
 	float block_glow = 0.0;
 	for (int i = 0; i < block_light_count; i++) {
 		vec4 l = texelFetch(lights_tex, ivec2(i, 0), 0);
 		vec3 lpos = l.xyz;
 		float level = l.w;
 		float dist = length(world_pos - lpos);
-		float radius = level;  // light level = reach in blocks
-		float atten = max(0.0, 1.0 - dist / radius);
+		float t = clamp(dist / level, 0.0, 1.0);
+		// Smoothstep gives a gradual roll-off: bright near center, soft falloff edge.
+		float atten = 1.0 - smoothstep(0.0, 1.0, t);
 		block_glow = max(block_glow, atten);
 	}
 	// Warm torch tint — orange-ish so it reads as firelight.
-	light += vec3(0.9, 0.65, 0.3) * block_glow * 0.55;
+	light += vec3(0.9, 0.65, 0.3) * block_glow * 0.6;
 
 	// Face-based shading
 	float face_shade = 0.72 + 0.28 * an.y + 0.08 * an.x;
