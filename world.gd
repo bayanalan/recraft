@@ -76,6 +76,9 @@ var _pending_sky_updates: Array[Vector3i] = []
 var _pending_sky_update_set: Dictionary = {}
 var _pending_blight_updates: Array[Vector3i] = []
 var _pending_blight_update_set: Dictionary = {}
+# Set true in set_voxel; causes _process to skip BFS drain that same frame so
+# the BFS cost (6-10 ms) doesn't stack on top of the mesh-rebuild cost.
+var _block_changed_this_frame: bool = false
 
 # Per-column sky heightmap: _col_top_opaque[wz*size + wx] = highest Y
 # that is sky-opaque. Blocks at or above this Y receive full sky_access=1.
@@ -246,6 +249,56 @@ func _update_sky_light(wx: int, wy: int, wz: int, bfs_radius: int = 2) -> void:
 				var idx: int = ry * SS + rz * S + rx
 				_sky_light[idx] = 15
 				buckets[15].append(idx)
+
+	# Seed from the zone's border neighbors so sky light from a distant cave
+	# entrance can still flow into this freshly-zeroed region. Without this, a
+	# long cave produces a hard cutoff where light stops at the BFS zone edge.
+	# Only non-opaque border cells are used: solid blocks could carry stale
+	# non-zero values that would inject phantom light patches into the zone.
+	for ry: int in range(0, S):
+		for rz: int in range(z0, z1 + 1):
+			if x0 > 0:
+				var bi: int = ry * SS + rz * S + (x0 - 1)
+				if _opaque[bi] == 0:
+					var bv: int = _sky_light[bi]
+					if bv > 1:
+						var ii: int = ry * SS + rz * S + x0
+						var nv: int = bv - 1
+						if _sky_light[ii] < nv:
+							_sky_light[ii] = nv
+							buckets[nv].append(ii)
+			if x1 < S - 1:
+				var bi: int = ry * SS + rz * S + (x1 + 1)
+				if _opaque[bi] == 0:
+					var bv: int = _sky_light[bi]
+					if bv > 1:
+						var ii: int = ry * SS + rz * S + x1
+						var nv: int = bv - 1
+						if _sky_light[ii] < nv:
+							_sky_light[ii] = nv
+							buckets[nv].append(ii)
+		for rx: int in range(x0, x1 + 1):
+			if z0 > 0:
+				var bi: int = ry * SS + (z0 - 1) * S + rx
+				if _opaque[bi] == 0:
+					var bv: int = _sky_light[bi]
+					if bv > 1:
+						var ii: int = ry * SS + z0 * S + rx
+						var nv: int = bv - 1
+						if _sky_light[ii] < nv:
+							_sky_light[ii] = nv
+							buckets[nv].append(ii)
+			if z1 < S - 1:
+				var bi: int = ry * SS + (z1 + 1) * S + rx
+				if _opaque[bi] == 0:
+					var bv: int = _sky_light[bi]
+					if bv > 1:
+						var ii: int = ry * SS + z1 * S + rx
+						var nv: int = bv - 1
+						if _sky_light[ii] < nv:
+							_sky_light[ii] = nv
+							buckets[nv].append(ii)
+
 	_run_sky_bfs(_sky_light, buckets, S, SS, x0, x1, 0, S-1, z0, z1)
 	_sky_texture_dirty = true
 
@@ -693,6 +746,7 @@ func get_water_level_at(wx: int, wy: int, wz: int) -> int:
 func set_voxel(wx: int, wy: int, wz: int, block_type: int) -> void:
 	if wx < 0 or wx >= world_size_blocks or wy < 0 or wy >= world_size_blocks or wz < 0 or wz >= world_size_blocks:
 		return
+	_block_changed_this_frame = true
 	var cp := Vector3i(wx >> 4, wy >> 4, wz >> 4)
 	# Create chunk on demand if it doesn't exist (e.g., building above terrain).
 	var chunk: Chunk = _ensure_chunk(cp)
@@ -789,6 +843,7 @@ func set_voxel(wx: int, wy: int, wz: int, block_type: int) -> void:
 				else:
 					affected[ncp] = [lp]
 
+	var main_cp := Vector3i(wx >> 4, wy >> 4, wz >> 4)
 	for acp: Vector3i in affected:
 		var ac: Chunk = chunks[acp]
 		if ac.mesh != ac._arr_mesh:
@@ -797,7 +852,10 @@ func set_voxel(wx: int, wy: int, wz: int, block_type: int) -> void:
 		var locals: Array = affected[acp]
 		for lp: Vector3i in locals:
 			ac._rebuild_block_faces(lp.x, lp.y, lp.z)
-		ac._apply_mesh()
+		# Only rebuild collision shape for the chunk that actually gained/lost a
+		# block. Neighbor chunks are rebuilt for AO correction only — no geometry
+		# changed there, so the physics shape stays valid.
+		ac._apply_mesh(acp == main_cp)
 
 
 ## Rebuild a chunk's own mesh from its current voxels and point `chunk.mesh`
@@ -1283,10 +1341,9 @@ func _explode(center: Vector3i, radius: float) -> void:
 					break
 			_col_top_opaque[_ecz * _ES + _ecx] = _enew_top
 		# Update sky and block light over the whole explosion area.
-		# bfs_radius = r_i + 2 so the sky BFS covers the full blast diameter
-		# plus a 2-block margin — prevents the hard dark cutoff at the
-		# edge of the crater when RADIUS=2 was smaller than the blast.
-		_update_sky_light(center.x, center.y, center.z, r_i + 2)
+		# bfs_radius = r_i + 10 so sky light propagates well into the cave
+		# system surrounding the crater, not just the blast sphere itself.
+		_update_sky_light(center.x, center.y, center.z, r_i + 10)
 		_update_block_light(center.x, center.y, center.z)
 
 	# Phase 2c: wake up any fluid neighbors of destroyed cells. Same pass
@@ -1567,16 +1624,18 @@ func _process(delta: float) -> void:
 	_tick_sapling_growth(delta)
 
 	# Drain deferred BFS queue — one sky update and one block-light update per
-	# frame so the BFS budget is always capped at one ~6-10 ms call regardless
-	# of how fast the player places or breaks blocks.
-	if not _pending_sky_updates.is_empty():
-		var _sp: Vector3i = _pending_sky_updates.pop_front()
-		_pending_sky_update_set.erase(_sp)
-		_update_sky_light(_sp.x, _sp.y, _sp.z)
-	if not _pending_blight_updates.is_empty():
-		var _bp: Vector3i = _pending_blight_updates.pop_front()
-		_pending_blight_update_set.erase(_bp)
-		_update_block_light(_bp.x, _bp.y, _bp.z)
+	# frame. Skipped on any frame where a block was placed or broken so the
+	# BFS cost (6-10 ms) never stacks on top of the mesh-rebuild cost.
+	if not _block_changed_this_frame:
+		if not _pending_sky_updates.is_empty():
+			var _sp: Vector3i = _pending_sky_updates.pop_front()
+			_pending_sky_update_set.erase(_sp)
+			_update_sky_light(_sp.x, _sp.y, _sp.z)
+		if not _pending_blight_updates.is_empty():
+			var _bp: Vector3i = _pending_blight_updates.pop_front()
+			_pending_blight_update_set.erase(_bp)
+			_update_block_light(_bp.x, _bp.y, _bp.z)
+	_block_changed_this_frame = false
 	# Upload sky texture once per frame — consolidates immediate cell seeds from
 	# set_voxel AND full BFS results from _update_sky_light into a single upload.
 	if _sky_texture_dirty:

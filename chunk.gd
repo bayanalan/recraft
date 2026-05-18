@@ -1191,12 +1191,12 @@ func generate_mesh(mat: Material = null, water_mat: Material = null) -> void:
 
 # --- Apply arrays to mesh (splits into solid + water surfaces) ---
 
-func _apply_mesh() -> void:
+func _apply_mesh(update_physics: bool = true) -> void:
 	var total_verts: int = _slot_count * 6
 	_arr_mesh.clear_surfaces()
 
 	if total_verts == 0:
-		if _physics_ready:
+		if _physics_ready and update_physics:
 			PhysicsServer3D.shape_set_data(_shape_rid, {"faces": PackedVector3Array(), "backface_collision": true})
 		# Ensure mesh points to our own ArrayMesh (may have been shared from
 		# a flatgrass template — switch back to own on edit).
@@ -1224,7 +1224,7 @@ func _apply_mesh() -> void:
 		_arr_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
 		if _stored_mat != null:
 			_arr_mesh.surface_set_material(0, _stored_mat)
-		if _physics_ready:
+		if _physics_ready and update_physics:
 			PhysicsServer3D.shape_set_data(_shape_rid, {"faces": _verts, "backface_collision": true})
 		mesh = _arr_mesh
 		return
@@ -1320,7 +1320,7 @@ func _apply_mesh() -> void:
 	# solid verts so the player walks through them. Water is already handled
 	# (it went to the water surface, not solid_verts). Break-raycasts still
 	# hit these blocks because block_outline uses voxel lookups, not physics.
-	if _physics_ready:
+	if _physics_ready and update_physics:
 		var col_verts: PackedVector3Array
 		if _has_noncollidable_faces:
 			col_verts = PackedVector3Array()
