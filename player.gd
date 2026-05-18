@@ -640,12 +640,13 @@ func _physics_process(delta: float) -> void:
 	_update_block_outline()
 
 	# Underwater overlay — check whether the camera is inside a water cell.
-	_update_underwater()
+	_update_underwater(delta)
 
 
 var _was_underwater: bool = false
 var _was_in_lava: bool = false
-func _update_underwater() -> void:
+var _lava_damage_accum: float = 0.0
+func _update_underwater(delta: float) -> void:
 	if world == null or hud == null:
 		return
 	var cp: Vector3 = camera.global_position
@@ -660,6 +661,23 @@ func _update_underwater() -> void:
 		_was_in_lava = in_lava
 		if hud.has_method("set_in_lava"):
 			hud.set_in_lava(in_lava)
+	if in_lava and GameConfig.game_mode == GameConfig.GameMode.SURVIVAL:
+		# 4 hearts (8 HP) per second, bypasses invincibility timer, reduced by armor.
+		_lava_damage_accum += 8.0 * delta
+		if _lava_damage_accum >= 1.0:
+			var dmg: int = int(_lava_damage_accum)
+			_lava_damage_accum -= float(dmg)
+			var armor_reduction: float = 0.0
+			if hud != null and hud.has_method("get_armor_value"):
+				armor_reduction = clampf(float(hud.get_armor_value()) * 0.04, 0.0, 0.80)
+			var actual: int = maxi(1, int(ceil(float(dmg) * (1.0 - armor_reduction))))
+			health = maxi(0, health - actual)
+			if hud != null and hud.has_method("update_health"):
+				hud.update_health(health)
+			if health <= 0:
+				_on_death()
+	else:
+		_lava_damage_accum = 0.0
 
 
 func _update_block_outline() -> void:

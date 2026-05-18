@@ -139,6 +139,12 @@ func _process(delta: float) -> void:
 		queue_free()
 		return
 
+	if _world != null and is_instance_valid(_world) and _world.has_method("get_voxel"):
+		var gp: Vector3 = global_position
+		if _world.get_voxel(int(floor(gp.x)), int(floor(gp.y)), int(floor(gp.z))) == Chunk.Block.LAVA:
+			queue_free()
+			return
+
 	_merge_timer -= delta
 	if _merge_timer <= 0.0:
 		_merge_timer = MERGE_CHECK_INTERVAL

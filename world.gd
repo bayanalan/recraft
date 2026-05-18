@@ -1768,6 +1768,8 @@ func _tick_fluid(fluid: int, pending: Array[Vector3i]) -> void:
 			continue
 		echunk.voxels[eidx] = Chunk.Block.AIR
 		echunk.water_level[eidx] = 0
+		if fluid == Chunk.Block.LAVA:
+			light_emitters.erase(p)
 		# Queue fluid neighbors so their upstream is rechecked next tick.
 		for off: Vector3i in EVAP_NBRS:
 			var np: Vector3i = p + off
@@ -1805,6 +1807,8 @@ func _tick_fluid(fluid: int, pending: Array[Vector3i]) -> void:
 			continue
 		chunk.water_level[idx] = lvl
 		chunk.voxels[idx] = fluid
+		if fluid == Chunk.Block.LAVA:
+			light_emitters[np] = get_block_light_level(Chunk.Block.LAVA)
 		if lvl < 8:
 			pending.append(np)
 		# Water + lava neighbors → obsidian/cobblestone. Check after each
@@ -2729,8 +2733,23 @@ func _find_surface_y(wx: int, wz: int) -> int:
 ## (all level 1). Thinning only applies to flowing water from a player-placed
 ## source, not to static ponds.
 func _place_water_pools(rng: RandomNumberGenerator) -> void:
+	var min_pools: int
+	var max_pools: int
+	if world_size_blocks <= 64:
+		min_pools = 2; max_pools = 3
+	elif world_size_blocks <= 128:
+		min_pools = 4; max_pools = 6
+	elif world_size_blocks <= 256:
+		min_pools = 7; max_pools = 9
+	else:
+		min_pools = 12; max_pools = 14
+	var placed: int = 0
 	var attempts: int = maxi(6, (world_size_blocks * world_size_blocks) / 256)
+
+	# First pass: normal placement with beach-proximity and chance filters.
 	for _i: int in attempts:
+		if placed >= max_pools:
+			break
 		var cx: int = rng.randi_range(4, world_size_blocks - 5)
 		var cz: int = rng.randi_range(4, world_size_blocks - 5)
 		var gy: int = _find_surface_y(cx, cz)
@@ -2739,8 +2758,6 @@ func _place_water_pools(rng: RandomNumberGenerator) -> void:
 		var surf: int = get_voxel(cx, gy, cz)
 		if surf != Chunk.Block.GRASS and surf != Chunk.Block.SAND:
 			continue
-
-		# Beach-adjacent ponds always pass; otherwise only ~25% of the time.
 		var near_beach: bool = get_biome(cx, cz) == BIOME_BEACH
 		if not near_beach:
 			for d: int in [-2, 2]:
@@ -2749,64 +2766,71 @@ func _place_water_pools(rng: RandomNumberGenerator) -> void:
 					break
 		if not near_beach and rng.randf() > 0.25:
 			continue
+		if _try_place_water_pool(rng, cx, cz):
+			placed += 1
 
-		var radius: int = rng.randi_range(2, 4)
-		# Water sits one block below the original surface so it reads as
-		# "in the ground" rather than sitting on top of the terrain.
-		var water_y: int = gy - 1
-		if water_y < 1:
-			continue
-
-		# Flatness precheck: every cell in the disk must have surface exactly
-		# at gy. Rejects pools on cliffs / slopes where the pool would be
-		# buried (surface above gy) or unsupported (surface below gy). Hilly
-		# terrain still gets pools — just on flat pockets.
-		var flat: bool = true
-		for dx: int in range(-radius, radius + 1):
-			for dz: int in range(-radius, radius + 1):
-				var dist: int = absi(dx) + absi(dz)
-				if dist > radius:
-					continue
-				var tx: int = cx + dx
-				var tz: int = cz + dz
-				if tx < 1 or tz < 1 or tx >= world_size_blocks - 1 or tz >= world_size_blocks - 1:
-					flat = false
-					break
-				if _find_surface_y(tx, tz) != gy:
-					flat = false
-					break
-			if not flat:
+	# Second pass: if minimum not met, retry without beach/chance filter.
+	if placed < min_pools:
+		var extra_attempts: int = attempts * 4
+		for _i: int in extra_attempts:
+			if placed >= min_pools:
 				break
-		if not flat:
-			continue
+			var cx: int = rng.randi_range(4, world_size_blocks - 5)
+			var cz: int = rng.randi_range(4, world_size_blocks - 5)
+			var gy: int = _find_surface_y(cx, cz)
+			if gy < 2:
+				continue
+			var surf: int = get_voxel(cx, gy, cz)
+			if surf != Chunk.Block.GRASS and surf != Chunk.Block.SAND:
+				continue
+			if _try_place_water_pool(rng, cx, cz):
+				placed += 1
 
-		for dx: int in range(-radius, radius + 1):
-			for dz: int in range(-radius, radius + 1):
-				var dist: int = absi(dx) + absi(dz)
-				if dist > radius:
-					continue
-				var tx: int = cx + dx
-				var tz: int = cz + dz
-				# Carve the original surface to air — this is the pond rim.
-				_gen_set(tx, gy, tz, Chunk.Block.AIR)
-				# All pond water is full-height (level 1).
-				_gen_set_water(tx, water_y, tz, 1)
 
-		# Seal the pool rim — a single ring of cells at dist == radius + 1.
-		# Only the sideways boundary at water_y is touched; we never place
-		# blocks above (that would cover the pool) or around individual
-		# interior water blocks. Terrain already provides the bottom seal
-		# because the flatness check guarantees solid ground below water_y.
-		for dx: int in range(-(radius + 1), radius + 2):
-			for dz: int in range(-(radius + 1), radius + 2):
-				if absi(dx) + absi(dz) != radius + 1:
-					continue
-				var tx: int = cx + dx
-				var tz: int = cz + dz
-				if tx < 0 or tz < 0 or tx >= world_size_blocks or tz >= world_size_blocks:
-					continue
-				if get_voxel(tx, water_y, tz) == Chunk.Block.AIR:
-					_gen_set(tx, water_y, tz, Chunk.Block.DIRT)
+func _try_place_water_pool(rng: RandomNumberGenerator, cx: int, cz: int) -> bool:
+	var gy: int = _find_surface_y(cx, cz)
+	var radius: int = rng.randi_range(2, 4)
+	var water_y: int = gy - 1
+	if water_y < 1:
+		return false
+
+	# Flatness precheck: every cell in the disk must have surface exactly
+	# at gy. Rejects pools on cliffs / slopes where the pool would be
+	# buried (surface above gy) or unsupported (surface below gy).
+	for dx: int in range(-radius, radius + 1):
+		for dz: int in range(-radius, radius + 1):
+			var dist: int = absi(dx) + absi(dz)
+			if dist > radius:
+				continue
+			var tx: int = cx + dx
+			var tz: int = cz + dz
+			if tx < 1 or tz < 1 or tx >= world_size_blocks - 1 or tz >= world_size_blocks - 1:
+				return false
+			if _find_surface_y(tx, tz) != gy:
+				return false
+
+	for dx: int in range(-radius, radius + 1):
+		for dz: int in range(-radius, radius + 1):
+			var dist: int = absi(dx) + absi(dz)
+			if dist > radius:
+				continue
+			var tx: int = cx + dx
+			var tz: int = cz + dz
+			_gen_set(tx, gy, tz, Chunk.Block.AIR)
+			_gen_set_water(tx, water_y, tz, 1)
+
+	# Seal the pool rim — a single ring of cells at dist == radius + 1.
+	for dx: int in range(-(radius + 1), radius + 2):
+		for dz: int in range(-(radius + 1), radius + 2):
+			if absi(dx) + absi(dz) != radius + 1:
+				continue
+			var tx: int = cx + dx
+			var tz: int = cz + dz
+			if tx < 0 or tz < 0 or tx >= world_size_blocks or tz >= world_size_blocks:
+				continue
+			if get_voxel(tx, water_y, tz) == Chunk.Block.AIR:
+				_gen_set(tx, water_y, tz, Chunk.Block.DIRT)
+	return true
 
 
 ## Scatter lava pools on the floors of caves. For each random sample point in
@@ -2920,10 +2944,20 @@ const CAVE_DEPTH_SCALE: float = 0.35
 
 func _carve_caves(rng: RandomNumberGenerator) -> void:
 	var count: int = int(world_size_blocks * world_size_blocks * CAVE_DENSITY_PER_M2)
+	var max_entrances: int
+	if world_size_blocks <= 64:
+		max_entrances = 1
+	elif world_size_blocks <= 128:
+		max_entrances = 4
+	elif world_size_blocks <= 256:
+		max_entrances = 7
+	else:
+		max_entrances = 10
+	var entrances_made: int = 0
 	for _i: int in count:
-		# ~22% of caves begin at the surface and carve downward, creating
-		# natural cave entrances you can walk into. The rest start deep.
-		var is_entrance: bool = rng.randf() < 0.22
+		var is_entrance: bool = entrances_made < max_entrances and rng.randf() < 0.22
+		if is_entrance:
+			entrances_made += 1
 		_carve_cave_worm(rng, is_entrance)
 
 
