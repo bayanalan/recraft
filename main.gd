@@ -538,6 +538,14 @@ func _get_all_shader_materials() -> Array[ShaderMaterial]:
 		var hm: ShaderMaterial = held.get_block_material()
 		if hm != null:
 			mats.append(hm)
+	# Include block-drop materials (ShaderMaterial only — item drops dim via
+	# albedo_color in _update_local_light, not via shader uniforms).
+	var tree: SceneTree = get_tree()
+	if tree != null:
+		for drop: Node in tree.get_nodes_in_group("item_drops"):
+			var drop_mesh: MeshInstance3D = drop.get("_mesh")
+			if drop_mesh != null and drop_mesh.material_override is ShaderMaterial:
+				mats.append(drop_mesh.material_override as ShaderMaterial)
 	return mats
 
 

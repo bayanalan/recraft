@@ -112,6 +112,9 @@ static func _ensure_init() -> void:
 	# Restore Orb: gold blocks at corners, logs on sides, diamond block at center
 	_recipes.append([3, [GoB, L, GoB, L, DiB, L, GoB, L, GoB], Items.RESTORE_ORB, 1])
 
+	# Bucket: 3 iron ingots in a V shape
+	_recipes.append([3, [Ir, 0, Ir, 0, Ir, 0, 0, 0, 0], Items.BUCKET, 1])
+
 
 ## Normalize a grid to its bounding box — removes leading/trailing empty rows and
 ## columns so the pattern can match regardless of where it's placed in the grid.

@@ -13,6 +13,10 @@ const QUARTZ:      int = 213
 const OAK_SAPLING: int = 214
 const RESTORE_ORB: int = 215
 
+const BUCKET:       int = 270
+const WATER_BUCKET: int = 271
+const LAVA_BUCKET:  int = 272
+
 const WOOD_SWORD:      int = 220
 const WOOD_PICKAXE:    int = 221
 const WOOD_AXE:        int = 222
@@ -116,6 +120,8 @@ static func is_block(id: int) -> bool:
 static func get_max_stack(id: int) -> int:
 	if (id >= 220 and id <= 244) or (id >= 250 and id <= 265):
 		return 1
+	if id == WATER_BUCKET or id == LAVA_BUCKET:
+		return 1
 	return 64
 
 
@@ -132,7 +138,10 @@ static func get_item_name(id: int) -> String:
 		BREAD:       return "Bread"
 		QUARTZ:      return "Quartz"
 		OAK_SAPLING: return "Oak Sapling"
-		RESTORE_ORB: return "Restore Orb"
+		RESTORE_ORB:  return "Restore Orb"
+		BUCKET:       return "Bucket"
+		WATER_BUCKET: return "Water Bucket"
+		LAVA_BUCKET:  return "Lava Bucket"
 		IRON_INGOT:  return "Iron Ingot"
 		GOLD_INGOT:  return "Gold Ingot"
 		WOOD_SWORD:      return "Wooden Sword"
@@ -228,7 +237,10 @@ static func get_item_color(id: int) -> Color:
 		BREAD:       return Color(0.78, 0.60, 0.28)
 		QUARTZ:      return Color(0.95, 0.92, 0.88)
 		OAK_SAPLING: return Color(0.20, 0.65, 0.12)
-		RESTORE_ORB: return Color(0.92, 0.78, 0.10)
+		RESTORE_ORB:  return Color(0.92, 0.78, 0.10)
+		BUCKET:       return Color(0.72, 0.72, 0.76)
+		WATER_BUCKET: return Color(0.25, 0.55, 0.90)
+		LAVA_BUCKET:  return Color(0.90, 0.45, 0.10)
 		IRON_INGOT:  return Color(0.78, 0.78, 0.80)
 		GOLD_INGOT:  return Color(0.95, 0.82, 0.10)
 	if id >= 220 and id <= 244:
@@ -294,6 +306,12 @@ static func draw_item_icon(canvas: CanvasItem, cx: float, cy: float, size: float
 		_icon_sapling(canvas, ox, oy, ps)
 	elif id == RESTORE_ORB:
 		_icon_restore_orb(canvas, ox, oy, ps)
+	elif id == BUCKET:
+		_icon_bucket(canvas, ox, oy, ps, Color(0, 0, 0, 0))
+	elif id == WATER_BUCKET:
+		_icon_bucket(canvas, ox, oy, ps, Color(0.22, 0.46, 0.84))
+	elif id == LAVA_BUCKET:
+		_icon_bucket(canvas, ox, oy, ps, Color(0.88, 0.40, 0.05))
 	elif id >= 220 and id <= 244:
 		var tex: Texture2D = _get_tool_texture(id)
 		if tex != null:
@@ -579,6 +597,36 @@ static func _icon_armor(canvas: CanvasItem, ox: float, oy: float, ps: float, id:
 			_r(canvas, ox, oy, ps, 8, 10, 7, 3, col)
 			_r(canvas, ox, oy, ps, 9, 3, 2, 2, light)
 			_r(canvas, ox, oy, ps, 8, 12, 7, 1, dark)
+
+
+static func _icon_bucket(canvas: CanvasItem, ox: float, oy: float, ps: float, fill: Color) -> void:
+	var m := Color(0.68, 0.68, 0.72)   # iron body
+	var d := Color(0.40, 0.40, 0.44)   # shadow / dark edge
+	var l := Color(0.90, 0.90, 0.94)   # highlight
+	# Handle arc
+	_r(canvas, ox, oy, ps, 5, 0, 6, 1, d)   # handle bar top
+	_r(canvas, ox, oy, ps, 4, 1, 1, 1, d)   # handle left leg
+	_r(canvas, ox, oy, ps, 11, 1, 1, 1, d)  # handle right leg
+	# Top rim
+	_r(canvas, ox, oy, ps, 3, 2, 10, 1, l)  # rim highlight
+	_r(canvas, ox, oy, ps, 3, 3, 10, 1, m)  # rim body
+	_r(canvas, ox, oy, ps, 3, 3, 2, 1, l)   # rim left highlight
+	# Left wall
+	_r(canvas, ox, oy, ps, 3, 4, 1, 7, d)   # outer shadow
+	_r(canvas, ox, oy, ps, 4, 4, 1, 7, l)   # inner highlight
+	# Right wall
+	_r(canvas, ox, oy, ps, 12, 4, 1, 7, d)  # outer shadow
+	_r(canvas, ox, oy, ps, 11, 4, 1, 7, m)  # inner body
+	# Fill interior (empty or colored fluid)
+	if fill.a > 0.1:
+		_r(canvas, ox, oy, ps, 5, 4, 6, 6, fill)
+		_r(canvas, ox, oy, ps, 5, 4, 3, 1, fill.lightened(0.25))  # surface glint
+	else:
+		_r(canvas, ox, oy, ps, 5, 4, 6, 6, d.darkened(0.3))  # empty interior
+	# Bottom face
+	_r(canvas, ox, oy, ps, 4, 11, 8, 1, m)   # bottom
+	_r(canvas, ox, oy, ps, 4, 12, 8, 1, d)   # bottom shadow
+	_r(canvas, ox, oy, ps, 4, 11, 3, 1, l)   # bottom highlight
 
 
 static func _icon_sapling(canvas: CanvasItem, ox: float, oy: float, ps: float) -> void:

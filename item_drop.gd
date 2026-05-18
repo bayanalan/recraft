@@ -41,6 +41,7 @@ var _player: Node = null
 var _merge_timer: float = 0.0
 var _sub_meshes: Array[MeshInstance3D] = []
 var _light_timer: float = 0.0
+var _item_base_color: Color = Color.WHITE
 
 static var _item_tex_cache: Dictionary = {}
 
@@ -247,9 +248,6 @@ func _update_local_light() -> void:
 	if _mesh == null or not is_instance_valid(_mesh):
 		return
 	var mat: Material = _mesh.material_override
-	if not (mat is ShaderMaterial):
-		return
-	var sm: ShaderMaterial = mat as ShaderMaterial
 	if _world == null or not is_instance_valid(_world) or not _world.has_method("get_sky_access"):
 		return
 	var wx: int = int(global_position.x)
@@ -262,8 +260,15 @@ func _update_local_light() -> void:
 		var lvl: int = _world.light_emitters[lpos]
 		var dist: float = global_position.distance_to(wlpos)
 		glow = maxf(glow, maxf(0.0, 1.0 - dist / float(lvl)))
-	sm.set_shader_parameter("sky_access", sky)
-	sm.set_shader_parameter("block_glow", glow)
+	if mat is ShaderMaterial:
+		var sm: ShaderMaterial = mat as ShaderMaterial
+		sm.set_shader_parameter("sky_access", sky)
+		sm.set_shader_parameter("block_glow", glow)
+	elif mat is StandardMaterial3D:
+		const CAVE_AMBIENT_F: float = 0.05
+		const MIN_BRIGHT: float = 0.12
+		var bright: float = maxf(MIN_BRIGHT, CAVE_AMBIENT_F + sky * 0.8 + glow * 0.55)
+		(mat as StandardMaterial3D).albedo_color = _item_base_color * bright
 
 
 func _build_billboard_mesh() -> ArrayMesh:
@@ -344,8 +349,9 @@ func _build_cube_mesh(block_type: int) -> ArrayMesh:
 
 
 func _build_item_material(id: int) -> StandardMaterial3D:
+	_item_base_color = Items.get_item_color(id)
 	var mat := StandardMaterial3D.new()
-	mat.albedo_color = Items.get_item_color(id)
+	mat.albedo_color = _item_base_color
 	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
 	mat.cull_mode = BaseMaterial3D.CULL_DISABLED
 	return mat
@@ -382,6 +388,7 @@ func _fetch_item_texture(id: int) -> void:
 func _apply_item_texture(tex: ImageTexture) -> void:
 	if not is_instance_valid(_mesh):
 		return
+	_item_base_color = Color.WHITE
 	var mat := StandardMaterial3D.new()
 	mat.albedo_texture = tex
 	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA_SCISSOR

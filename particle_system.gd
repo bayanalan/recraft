@@ -192,6 +192,14 @@ func _process(delta: float) -> void:
 	_multimesh.visible_instance_count = _active_count
 
 
+## Set per-position sky and block light on the particle material.
+## Call once after spawn_break_burst so particles match the local lighting.
+func set_light(p_sky_access: float, p_block_glow: float) -> void:
+	if _mesh_material != null:
+		_mesh_material.set_shader_parameter("sky_access", p_sky_access)
+		_mesh_material.set_shader_parameter("block_glow", p_block_glow)
+
+
 ## Re-bind the (possibly rebuilt) block atlas onto the particle material. Used
 ## when the mipmap setting toggles and the atlas is regenerated.
 func refresh_atlas() -> void:

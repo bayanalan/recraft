@@ -55,6 +55,7 @@ const ALL_BLOCKS: Array[int] = [
 	Items.GOLD_HELMET, Items.GOLD_CHESTPLATE, Items.GOLD_LEGGINGS, Items.GOLD_BOOTS,
 	Items.DIAMOND_HELMET, Items.DIAMOND_CHESTPLATE, Items.DIAMOND_LEGGINGS, Items.DIAMOND_BOOTS,
 	Items.RESTORE_ORB,
+	Items.BUCKET, Items.WATER_BUCKET, Items.LAVA_BUCKET,
 ]
 
 const MINERALS: Array[int] = [
@@ -88,6 +89,7 @@ const NATURAL: Array[int] = [
 	Chunk.Block.COAL_ORE, Chunk.Block.IRON_ORE, Chunk.Block.GOLD_ORE,
 	Chunk.Block.DIAMOND_ORE, Chunk.Block.NETHER_GOLD_ORE, Chunk.Block.NETHER_QUARTZ_ORE,
 	Items.STICK, Items.FLINT, Items.LEATHER, Items.APPLE, Items.BREAD,
+	Items.BUCKET, Items.WATER_BUCKET, Items.LAVA_BUCKET,
 ]
 
 const COLORFUL: Array[int] = [
@@ -113,6 +115,7 @@ const TOOLS_ITEMS: Array[int] = [
 	Items.IRON_HELMET, Items.IRON_CHESTPLATE, Items.IRON_LEGGINGS, Items.IRON_BOOTS,
 	Items.GOLD_HELMET, Items.GOLD_CHESTPLATE, Items.GOLD_LEGGINGS, Items.GOLD_BOOTS,
 	Items.DIAMOND_HELMET, Items.DIAMOND_CHESTPLATE, Items.DIAMOND_LEGGINGS, Items.DIAMOND_BOOTS,
+	Items.BUCKET, Items.WATER_BUCKET, Items.LAVA_BUCKET,
 ]
 
 var _atlas: Texture2D = null

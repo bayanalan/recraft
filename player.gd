@@ -385,6 +385,43 @@ func _physics_process(delta: float) -> void:
 								hud._sync_slots_from_inventory()
 							_place_cooldown = ACTION_COOLDOWN
 							action_performed.emit("place")
+				elif block_type == Items.BUCKET and rmb_edge:
+					# Pick up water or lava into a bucket.
+					var hit: Dictionary = world.raycast_voxel(ray_origin, ray_dir)
+					if hit.get("hit", false):
+						var hpos: Vector3i = hit["position"]
+						var target_block: int = world.get_voxel(hpos.x, hpos.y, hpos.z)
+						var fluid_bucket: int = 0
+						if target_block == Chunk.Block.WATER:
+							fluid_bucket = Items.WATER_BUCKET
+						elif target_block == Chunk.Block.LAVA:
+							fluid_bucket = Items.LAVA_BUCKET
+						if fluid_bucket != 0:
+							world.set_voxel(hpos.x, hpos.y, hpos.z, Chunk.Block.AIR)
+							if is_survival and hud != null:
+								hud.inventory.take_from_slot(hud.selected_slot, 1)
+								hud.give_item(fluid_bucket, 1)
+								hud._sync_slots_from_inventory()
+							_place_cooldown = ACTION_COOLDOWN
+							action_performed.emit("place")
+				elif (block_type == Items.WATER_BUCKET or block_type == Items.LAVA_BUCKET) and rmb_edge:
+					# Place the fluid and return an empty bucket.
+					var hit: Dictionary = world.raycast_voxel(ray_origin, ray_dir)
+					if hit.get("hit", false):
+						var hpos: Vector3i = hit["position"]
+						var hnormal: Vector3i = hit["normal"]
+						var place_pos: Vector3i = hpos + hnormal
+						if world.get_voxel(place_pos.x, place_pos.y, place_pos.z) == Chunk.Block.AIR:
+							if block_type == Items.WATER_BUCKET:
+								world.set_water_voxel(place_pos.x, place_pos.y, place_pos.z, 1)
+							else:
+								world.set_lava_voxel(place_pos.x, place_pos.y, place_pos.z, 1)
+							if is_survival and hud != null:
+								hud.inventory.take_from_slot(hud.selected_slot, 1)
+								hud.give_item(Items.BUCKET, 1)
+								hud._sync_slots_from_inventory()
+							_place_cooldown = ACTION_COOLDOWN
+							action_performed.emit("place")
 				elif Items.is_item(block_type):
 					pass  # non-placeable item
 				else:

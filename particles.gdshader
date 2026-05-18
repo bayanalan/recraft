@@ -10,7 +10,10 @@ uniform sampler2D block_atlas : filter_nearest_mipmap, repeat_enable;
 const float ATLAS_TILES = 72.0;
 
 uniform vec3 sky_light = vec3(0.32, 0.30, 0.26);
-uniform vec3 ambient_light = vec3(0.28, 0.31, 0.38);
+uniform vec3 ambient_light = vec3(0.20, 0.22, 0.28);
+uniform float sky_access = 1.0;
+uniform float block_glow = 0.0;
+const vec3 CAVE_AMBIENT = vec3(0.025, 0.025, 0.03);
 
 varying flat float v_tile;
 varying flat float v_fade;
@@ -33,9 +36,9 @@ void fragment() {
 	vec2 atlas_uv = vec2((v_tile + tile_uv.x) / ATLAS_TILES, tile_uv.y);
 	vec3 tex_color = texture(block_atlas, atlas_uv).rgb;
 
-	// Fake directional lighting (matches voxel.gdshader)
 	vec3 n = normalize(world_normal);
-	vec3 light = ambient_light + sky_light;
+	vec3 light = CAVE_AMBIENT + (ambient_light + sky_light) * sky_access;
+	light += vec3(0.9, 0.65, 0.3) * block_glow * 0.6;
 
 	// Face-based shading
 	vec3 an = abs(n);

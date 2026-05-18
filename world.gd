@@ -160,6 +160,20 @@ func get_sky_access(wx: int, wy: int, wz: int) -> float:
 	var depth: int = maxi(0, _col_top_opaque[wz * size + wx] - wy)
 	return clampf(float(15 - depth) / 15.0, 0.0, 1.0)
 
+## Sample sky_access + block_glow at a world position for particle lighting.
+func _particle_sky_access(pos: Vector3i) -> float:
+	return get_sky_access(pos.x, pos.y + 1, pos.z)
+
+func _particle_block_glow(pos: Vector3i) -> float:
+	var glow: float = 0.0
+	var center := Vector3(pos.x + 0.5, pos.y + 0.5, pos.z + 0.5)
+	for lpos: Vector3i in light_emitters:
+		var lvl: int = light_emitters[lpos]
+		var d: float = center.distance_to(Vector3(lpos.x + 0.5, lpos.y + 0.5, lpos.z + 0.5))
+		glow = maxf(glow, maxf(0.0, 1.0 - d / float(lvl)))
+	return glow
+
+
 ## Sky-light BFS. Seeds all non-opaque blocks above the highest opaque block
 ## in each column with level 15 (they can see the sky), then spreads that
 ## light outward. Rule: propagating DOWN from a level-15 cell costs nothing
@@ -950,6 +964,7 @@ func break_block(origin: Vector3, direction: Vector3, held_item: int = 0) -> Dic
 	var pos: Vector3i = hit["position"]
 	if particle_system != null:
 		particle_system.spawn_break_burst(Vector3(pos) + Vector3(0.5, 0.5, 0.5), block)
+		particle_system.set_light(_particle_sky_access(pos), _particle_block_glow(pos))
 	set_voxel(pos.x, pos.y, pos.z, Chunk.Block.AIR)
 	# Remove light emitter if this block was one.
 	if light_emitters.has(pos):
@@ -1272,6 +1287,9 @@ func _explode(center: Vector3i, radius: float) -> void:
 			var b: int = get_voxel(p.x, p.y, p.z)
 			if b > 0:
 				particle_system.spawn_break_burst(Vector3(p) + Vector3(0.5, 0.5, 0.5), b)
+		if particle_system != null and count > 0:
+			var sample_p: Vector3i = particle_candidates[0]
+			particle_system.set_light(_particle_sky_access(sample_p), _particle_block_glow(sample_p))
 	# Phase 2: write all voxels to AIR without triggering per-block mesh
 	# rebuilds. Direct chunk.voxels[idx] write skips set_voxel's rebuild.
 	var affected_chunks: Dictionary = {}  # Vector3i -> true
@@ -1997,6 +2015,7 @@ func _tick_leaf_decay(delta: float) -> void:
 	for p: Vector3i in to_decay:
 		if particle_system != null:
 			particle_system.spawn_break_burst(Vector3(p) + Vector3(0.5, 0.5, 0.5), Chunk.Block.LEAVES)
+			particle_system.set_light(_particle_sky_access(p), _particle_block_glow(p))
 		set_voxel(p.x, p.y, p.z, Chunk.Block.AIR)
 		_leaf_decay_timers.erase(p)
 		var drop_pos: Vector3 = Vector3(p) + Vector3(0.5, 0.5, 0.5)
@@ -2463,6 +2482,7 @@ func _generate_world(terrain_type: int) -> void:
 	# appear in a cave wall — that's the classic "spot a vein while
 	# exploring" moment and costs nothing.
 	_carve_caves(feature_rng)
+	_place_cave_lava_pools(feature_rng)
 	# Ores use their own deterministic sub-seed so restore_ores() can replay
 	# the exact same positions without needing to re-run pools/caves first.
 	var ore_rng := RandomNumberGenerator.new()
@@ -2669,6 +2689,20 @@ func _gen_set_leaf(wx: int, wy: int, wz: int) -> void:
 ## Direct-write a water block during generation. Sets water_level first so
 ## the value survives the chunk's set_voxel (which clears the level for any
 ## non-water block).
+func _gen_set_lava(wx: int, wy: int, wz: int) -> void:
+	if wx < 0 or wy < 0 or wz < 0:
+		return
+	if wx >= world_size_blocks or wy >= world_size_blocks or wz >= world_size_blocks:
+		return
+	var cp := Vector3i(wx >> 4, wy >> 4, wz >> 4)
+	var chunk: Chunk = chunks.get(cp)
+	if chunk == null:
+		return
+	var idx: int = (wx & 15) + ((wy & 15) << 4) + ((wz & 15) << 8)
+	chunk.water_level[idx] = 1
+	chunk.voxels[idx] = Chunk.Block.LAVA
+
+
 func _gen_set_water(wx: int, wy: int, wz: int, level: int) -> void:
 	if wx < 0 or wy < 0 or wz < 0:
 		return
@@ -2775,6 +2809,56 @@ func _place_water_pools(rng: RandomNumberGenerator) -> void:
 					_gen_set(tx, water_y, tz, Chunk.Block.DIRT)
 
 
+## Scatter lava pools on the floors of caves. For each random sample point in
+## the underground range, if the cell is air with stone directly below, place
+## a source lava block and expand in a disk across the cave floor.
+func _place_cave_lava_pools(rng: RandomNumberGenerator) -> void:
+	var S: int = world_size_blocks
+	# Target ~1 pool for small worlds, ~5-10 for a 512 world.
+	var max_pools: int = maxi(1, int(float(S * S) / 26000.0))
+	var attempts: int = max_pools * 600
+	var placed: int = 0
+	for _i: int in attempts:
+		if placed >= max_pools:
+			break
+		var cx: int = rng.randi_range(4, S - 5)
+		var cz: int = rng.randi_range(4, S - 5)
+		var cy: int = 5 + rng.randi_range(0, 25)  # y = 5..30, deep lava level
+		# Must be well below the surface so the pool is fully underground.
+		var surf: int = _find_surface_y(cx, cz)
+		if cy > surf - 8:
+			continue
+		# Need at least 2 solid blocks overhead so the pool has a stone ceiling.
+		if get_voxel(cx, cy + 1, cz) == Chunk.Block.AIR \
+				or get_voxel(cx, cy + 2, cz) == Chunk.Block.AIR:
+			continue
+		var radius: int = rng.randi_range(2, 4)
+		# Build a fully-enclosed pool:
+		#   cy-1  → stone floor under lava
+		#   cy    → lava (interior) or stone wall (perimeter)
+		# The diamond perimeter acts as the containing wall on all four sides.
+		var lava_count: int = 0
+		for dx: int in range(-radius, radius + 1):
+			for dz: int in range(-radius, radius + 1):
+				var manhattan: int = absi(dx) + absi(dz)
+				if manhattan > radius:
+					continue
+				var wx: int = cx + dx
+				var wz: int = cz + dz
+				if wx < 1 or wz < 1 or wx >= S - 1 or wz >= S - 1:
+					continue
+				if manhattan == radius:
+					# Perimeter: solid stone wall at lava level keeps it contained.
+					_gen_set(wx, cy, wz, Chunk.Block.STONE)
+				else:
+					# Interior: guarantee a solid floor, then place lava on top.
+					_gen_set(wx, cy - 1, wz, Chunk.Block.STONE)
+					_gen_set_lava(wx, cy, wz)
+					lava_count += 1
+		if lava_count > 0:
+			placed += 1
+
+
 ## Place a simple oak-like tree: trunk of LOG + layered LEAVES canopy.
 ## `wy` is the ground block (grass). The trunk starts at wy+1.
 func _place_tree(wx: int, wy: int, wz: int, rng: RandomNumberGenerator) -> void:
@@ -2825,21 +2909,21 @@ func _place_tree(wx: int, wy: int, wz: int, rng: RandomNumberGenerator) -> void:
 # step checks the LOCAL surface height and refuses to carve within
 # CAVE_MIN_SURFACE_DEPTH blocks of it — that's the key guard that keeps
 # caves from breaching the terrain surface.
-const CAVE_DENSITY_PER_M2: float = 1.0 / 300.0
-const CAVE_MIN_LENGTH: int = 50
-const CAVE_MAX_LENGTH: int = 140
-const CAVE_MIN_RADIUS: float = 1.0
-const CAVE_MAX_RADIUS: float = 1.8
-const CAVE_BUBBLE_CHANCE: float = 0.03
-const CAVE_MIN_SURFACE_DEPTH: int = 4
-const CAVE_DEPTH_SCALE: float = 0.3
+const CAVE_DENSITY_PER_M2: float = 1.0 / 250.0  # slightly denser
+const CAVE_MIN_LENGTH: int = 60
+const CAVE_MAX_LENGTH: int = 180  # longer caves
+const CAVE_MIN_RADIUS: float = 1.2  # slightly wider passages
+const CAVE_MAX_RADIUS: float = 2.0
+const CAVE_BUBBLE_CHANCE: float = 0.04  # slightly more caverns
+const CAVE_MIN_SURFACE_DEPTH: int = 3  # closer to surface
+const CAVE_DEPTH_SCALE: float = 0.35
 
 func _carve_caves(rng: RandomNumberGenerator) -> void:
 	var count: int = int(world_size_blocks * world_size_blocks * CAVE_DENSITY_PER_M2)
 	for _i: int in count:
-		# ~15% of caves begin at the surface and carve downward, creating
+		# ~22% of caves begin at the surface and carve downward, creating
 		# natural cave entrances you can walk into. The rest start deep.
-		var is_entrance: bool = rng.randf() < 0.15
+		var is_entrance: bool = rng.randf() < 0.22
 		_carve_cave_worm(rng, is_entrance)
 
 
@@ -2885,6 +2969,12 @@ func _carve_cave_worm(rng: RandomNumberGenerator, is_entrance: bool) -> void:
 	var z: float = float(sz) + 0.5
 	var length: int = int(rng.randi_range(CAVE_MIN_LENGTH, CAVE_MAX_LENGTH) * depth_mult)
 	var base_radius: float = rng.randf_range(CAVE_MIN_RADIUS, CAVE_MAX_RADIUS) * depth_mult
+
+	if is_entrance:
+		# Carve a wide visible mouth: a vertical shaft from the surface down to sy.
+		var mouth_r: float = rng.randf_range(2.2, 3.2)
+		for ey: int in range(sy - 1, surface + 3):
+			_carve_sphere(float(sx) + 0.5, float(ey) + 0.5, float(sz) + 0.5, mouth_r)
 
 	for _step: int in length:
 		var cp: float = cos(pitch)
@@ -3155,6 +3245,7 @@ func regenerate_nether(size: int, seed: int) -> void:
 	_place_nether_lava_pools(feature_rng)
 	# Caves
 	_carve_caves(feature_rng)
+	_place_cave_lava_pools(feature_rng)
 	_place_nether_ores(feature_rng)
 	# Huge fungi in the crimson and warped forest biomes.
 	_place_nether_trees(feature_rng)
@@ -3576,6 +3667,7 @@ func regenerate(size: int, terrain_type: int, seed: int = 0) -> void:
 	# appear in a cave wall — that's the classic "spot a vein while
 	# exploring" moment and costs nothing.
 	_carve_caves(feature_rng)
+	_place_cave_lava_pools(feature_rng)
 	var ore_rng2 := RandomNumberGenerator.new()
 	ore_rng2.seed = world_seed ^ 0xA3F1C209
 	_place_ores(ore_rng2)
